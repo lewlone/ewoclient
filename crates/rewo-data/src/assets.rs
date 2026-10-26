@@ -727,6 +727,10 @@ pub struct BakedAssets {
     pub armor_glint: Option<DecodedImage>,
     /// M282 — `misc/vignette.png`, the HUD vignette.
     pub vignette: Option<DecodedImage>,
+    /// `misc/shadow.png` (64 x 64 grey + alpha), the texture
+    /// `ShadowFeatureRenderer` projects onto the ground under an entity. `None`
+    /// draws no shadows.
+    pub shadow: Option<DecodedImage>,
     /// M283 — the other camera overlays: `misc/pumpkinblur.png`,
     /// `misc/powder_snow_outline.png`, `misc/spyglass_scope.png`.
     pub pumpkin_blur: Option<DecodedImage>,
@@ -2009,6 +2013,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
     // different scale, it is a different texture at a different scale.
     let armor_glint = bake_misc_texture(&mut jar, "enchanted_glint_armor.png");
     let vignette = bake_misc_texture(&mut jar, "vignette.png");
+    let shadow = bake_misc_texture(&mut jar, "shadow.png");
     let pumpkin_blur = bake_misc_texture(&mut jar, "pumpkinblur.png");
     let powder_snow = bake_misc_texture(&mut jar, "powder_snow_outline.png");
     let spyglass_scope = bake_misc_texture(&mut jar, "spyglass_scope.png");
@@ -2629,6 +2634,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         glint,
         armor_glint,
         vignette,
+        shadow,
         pumpkin_blur,
         powder_snow,
         spyglass_scope,

@@ -4694,6 +4694,68 @@ fn a_sulfur_cubes_block_sits_in_its_middle() {
     }
 }
 
+// -- entity shadows -------------------------------------------------------
+
+/// The real collision and outline tables decide which blocks carry a shadow:
+/// the cubes (including grass, whose model is not a cube) do, and the blocks
+/// vanilla's `isCollisionShapeFullBlock` rejects (a slab, a path, farmland,
+/// soul sand, a snow layer, a stair, a chest, a fence) and air do not. The
+/// sheet itself is a 64 x 64 radial shadow with a clear border.
+#[test]
+fn the_real_tables_pick_the_blocks_that_carry_a_shadow() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no config dir");
+        return;
+    };
+    let Some(jar) = super::client_jar_path("26.2") else {
+        rewo_data::skip_test!("no local 26.2 client jar");
+        return;
+    };
+    if !paths.blocks_json().is_file() {
+        rewo_data::skip_test!("no datagen report");
+        return;
+    }
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json()).expect("bake");
+    let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+    let shape = |name: &str| {
+        let s = blocks.default_state(name).expect(name) as usize;
+        rewo_world::shadow::ground_shape(&baked.collide[s], &baked.outline[s])
+    };
+    for full in [
+        "minecraft:stone",
+        "minecraft:dirt",
+        "minecraft:grass_block",
+        "minecraft:oak_planks",
+        "minecraft:sand",
+        "minecraft:glass",
+    ] {
+        assert_eq!(shape(full), Some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), "{full}");
+    }
+    for partial in [
+        "minecraft:air",
+        "minecraft:oak_slab",
+        "minecraft:oak_stairs",
+        "minecraft:dirt_path",
+        "minecraft:farmland",
+        "minecraft:soul_sand",
+        "minecraft:snow",
+        "minecraft:chest",
+        "minecraft:oak_fence",
+        "minecraft:water",
+    ] {
+        assert_eq!(shape(partial), None, "{partial}");
+    }
+    let sheet = baked.shadow.as_ref().expect("misc/shadow.png");
+    assert_eq!((sheet.w, sheet.h), (64, 64));
+    let alpha = |x: usize, y: usize| sheet.rgba[(y * 64 + x) * 4 + 3];
+    assert_eq!(alpha(32, 32), 255, "the centre is opaque");
+    assert!(
+        (0..64).all(|i| [alpha(i, 0), alpha(i, 63), alpha(0, i), alpha(63, i)] == [0; 4]),
+        "the border is clear, so a clamped read outside the sheet draws nothing"
+    );
+    assert_eq!(&sheet.rgba[(32 * 64 + 32) * 4..][..3], &[0, 0, 0], "black");
+}
+
 // -- the villager profession layer ---------------------------------------
 
 fn villager_ids() -> rewo_data::villager::VillagerRegistries {

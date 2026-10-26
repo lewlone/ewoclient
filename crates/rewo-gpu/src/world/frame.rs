@@ -78,6 +78,12 @@ impl WorldRenderer {
             self.in_gamma_space(gpu, cb, extent, || {
                 pass.draw_translucent(gpu, cb, view_proj, extent)
             });
+            // The entity shadows (`ShadowFeatureRenderer`): translucent in
+            // gamma space, depth-tested against the solid models and the
+            // terrain just written and not written themselves.
+            self.in_gamma_space(gpu, cb, extent, || {
+                pass.draw_shadow(gpu, cb, view_proj, extent)
+            });
             // M50: the worn-armour foil, then the trim. All three depth-test
             // `EQUAL` against the solid geometry just written, so all three
             // must follow it — and the foil precedes the trim because

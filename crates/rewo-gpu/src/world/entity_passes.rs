@@ -88,6 +88,40 @@ impl WorldRenderer {
         }
     }
 
+    /// The entity shadow sheet (`misc/shadow.png`), in the UNORM view's format
+    /// like the wind's. No sheet draws no shadows.
+    pub fn init_entity_shadow(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
+        match self.entities.as_mut() {
+            Some(p) => p.init_shadow(gpu, rgba, w, h, format),
+            None => Ok(()),
+        }
+    }
+
+    /// Stage this frame's entity shadow pieces; the next `set_entities` builds
+    /// them into the shadow range.
+    pub fn set_entity_shadows(&mut self, quads: Vec<crate::entities::ShadowQuad>) {
+        if let Some(p) = self.entities.as_mut() {
+            p.set_shadows(quads);
+        }
+    }
+
+    /// Vertices in the shadow range after the last `set_entities`.
+    pub fn shadow_vertex_count(&self) -> u32 {
+        self.entities
+            .as_ref()
+            .map(|p| p.shadow_vertex_count())
+            .unwrap_or(0)
+    }
+
     /// M306 — vertices in the translucent range after the last
     /// `set_entities`.
     pub fn translucent_vertex_count(&self) -> u32 {

@@ -50,6 +50,11 @@ pub struct Options {
     pub hide_lightning_flash: bool,
     /// M282 — `options.vignette`, default on.
     pub vignette: bool,
+    /// `options.entityShadows` ("Entity Shadows", `Options.java:514`), default
+    /// ON: `EntityRenderer.extractShadow` collects no shadow piece when it is
+    /// off. Read-only here (no Rewo screen sets it), so the line passes
+    /// through a save untouched.
+    pub entity_shadows: bool,
     /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
     ///
     /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
@@ -116,6 +121,7 @@ impl Default for Options {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
             vignette: true,
+            entity_shadows: true,
             // `OptionInstance.createBoolean("options.ao", true, ..)`
             // (`Options.java:236`) — ON unless the file says otherwise.
             smooth_lighting: true,
@@ -143,6 +149,8 @@ pub const KEY_CHAT_LINKS_PROMPT: &str = "chatLinksPrompt";
 /// M282 — `options.vignette`'s key (`Options.java:1539`). Read, not
 /// written: Rewo has no control for it, so the line passes through.
 pub const KEY_VIGNETTE: &str = "vignette";
+/// `options.entityShadows`' key (`Options.java:1509`). Read, not written.
+pub const KEY_ENTITY_SHADOWS: &str = "entityShadows";
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
 /// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
@@ -241,6 +249,18 @@ impl Options {
                 }
                 "false" => {
                     self.vignette = false;
+                    true
+                }
+                _ => false,
+            },
+            // `Codec.BOOL` like `vignette`: bare JSON, `TRUE` is not a value.
+            KEY_ENTITY_SHADOWS => match raw.trim() {
+                "true" => {
+                    self.entity_shadows = true;
+                    true
+                }
+                "false" => {
+                    self.entity_shadows = false;
                     true
                 }
                 _ => false,
@@ -491,6 +511,28 @@ mod tests {
         ] {
             assert_eq!(Options::parse(line).render_distance, want, "{line}");
         }
+    }
+
+    /// `entityShadows` is a `Codec.BOOL`, default ON; a value that is not
+    /// bare `true`/`false` keeps the default, and a save leaves the line alone
+    /// (no Rewo screen owns it).
+    #[test]
+    fn entity_shadows_default_on_and_read_as_a_bare_bool() {
+        assert!(Options::default().entity_shadows);
+        assert!(!Options::parse("entityShadows:false").entity_shadows);
+        assert!(Options::parse("entityShadows:true").entity_shadows);
+        for line in [
+            "entityShadows:\"false\"",
+            "entityShadows:FALSE",
+            "entityShadows:0",
+        ] {
+            assert!(Options::parse(line).entity_shadows, "{line}");
+        }
+        let merged = Options::default().merge_into("entityShadows:false\nao:true\n");
+        assert!(
+            merged.lines().any(|l| l == "entityShadows:false"),
+            "{merged}"
+        );
     }
 
     /// M206: `modelPart_*` is the plain boolean rule — anything but `true`

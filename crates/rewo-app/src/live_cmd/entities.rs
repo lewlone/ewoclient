@@ -4203,6 +4203,113 @@ pub(crate) fn villager_layers(
     })
 }
 
+/// [`rewo_world::shadow::ShadowGround`] over the live session: its blocks,
+/// light and the collision / outline tables.
+struct SessionGround<'a> {
+    session: &'a PlaySession,
+    blocks: &'a rewo_data::blocks::Blocks,
+    /// `Level.skyDarken`, the day's.
+    sky_darken: i32,
+}
+
+impl rewo_world::shadow::ShadowGround for SessionGround<'_> {
+    fn raw_brightness(&self, x: i32, y: i32, z: i32) -> i32 {
+        let (block, sky) = self.session.world.light_at(x, y, z);
+        rewo_world::vignette::raw_brightness(block, sky, self.sky_darken)
+    }
+
+    fn ground(&self, x: i32, y: i32, z: i32) -> Option<[f32; 6]> {
+        let state = self.session.world.block_state_at(x, y - 1, z);
+        // The barrier is the one full-collision block whose render shape is
+        // `INVISIBLE`; everything else a table calls a full block draws.
+        if self.blocks.block_name(state) == Some("minecraft:barrier") {
+            return None;
+        }
+        let at = state as usize;
+        let outline = self
+            .session
+            .outline
+            .get(at)
+            .map_or(&[][..], |o| o.as_slice());
+        rewo_world::shadow::ground_shape(self.session.collide.get(at)?, outline)
+    }
+}
+
+/// `EntityRenderer.extractShadow` for every entity this frame, as the quads
+/// `ShadowFeatureRenderer` draws.
+///
+/// `camera` is the camera's position (`distanceToCameraSq` is measured from
+/// it to the entity's feet); `ambient_light` and `sky_darken` are the
+/// dimension's and the day's. An invisible entity casts none, and neither does
+/// one whose renderer has no radius (items frames, paintings, arrows).
+pub(super) fn collect_entity_shadows(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    blocks: &rewo_data::blocks::Blocks,
+    alpha: f32,
+    camera: [f64; 3],
+    sky_darken: i32,
+) -> Vec<rewo_gpu::entities::ShadowQuad> {
+    let ents = &session.world.entities;
+    let attr_reg = session.attribute_registry.as_deref();
+    let ambient = session
+        .active_dimension_type
+        .as_ref()
+        .map_or(0.0, |d| d.ambient_light);
+    let ground = SessionGround {
+        session,
+        blocks,
+        sky_darken,
+    };
+    let mut out = Vec::new();
+    for (id, e) in ents.iter() {
+        let name = etypes.name(e.type_id).unwrap_or("");
+        let Some(def) = rewo_data::shadow::def(name) else {
+            continue;
+        };
+        if ents.is_invisible(id) {
+            continue;
+        }
+        let inputs = rewo_data::shadow::ShadowInputs {
+            baby: ents.is_baby(id),
+            // `LivingEntityRenderState.scale` is the `minecraft:scale`
+            // attribute; absent (not living, or never synced) is 1.
+            scale: attr_reg
+                .and_then(|r| {
+                    rewo_world::attributes::resolve(ents.attributes(id), Some(name), "scale", r)
+                })
+                .map_or(1.0, |(v, _)| v as f32),
+            cube_size: ents.size(id).unwrap_or(1).clamp(1, 32),
+            // `Pufferfish.PUFF_STATE` is not decoded: a deflated fish.
+            puff_state: 0,
+        };
+        let radius = def.shadow_radius(&inputs);
+        if radius <= 0.0 {
+            continue;
+        }
+        let p = e.render_pos(alpha);
+        let distance_sq =
+            (p[0] - camera[0]).powi(2) + (p[1] - camera[1]).powi(2) + (p[2] - camera[2]).powi(2);
+        for piece in rewo_world::shadow::extract_shadow_pieces(
+            p,
+            radius,
+            def.shadow_strength(),
+            distance_sq,
+            ambient,
+            &ground,
+        ) {
+            out.push(rewo_gpu::entities::ShadowQuad::from_piece(
+                p,
+                radius,
+                piece.rel,
+                piece.bounds,
+                piece.alpha,
+            ));
+        }
+    }
+    out
+}
+
 /// The baby's own model, where vanilla's renderer swaps one in: M307 —
 /// `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ? smallModel :
 /// normalModel`; M314 — `AgeableMobRenderer`'s for the happy ghast.
@@ -5826,6 +5933,10 @@ pub(crate) fn init_entities_maybe_cem(
     // M286: the breeze wind's sheet, the jar texture the atlas also packs.
     if let Some(t) = breeze_wind_texture(baked) {
         wr.init_entity_wind(gpu, &t.rgba, t.w, t.h)?;
+    }
+    // The entity shadow's sheet (`misc/shadow.png`).
+    if let Some(s) = baked.shadow.as_ref() {
+        wr.init_entity_shadow(gpu, &s.rgba, s.w, s.h)?;
     }
     // M282: the HUD vignette's texture; M283: the other camera overlays'
     // (`blur` in the pumpkin's mcmeta, none in the other two).

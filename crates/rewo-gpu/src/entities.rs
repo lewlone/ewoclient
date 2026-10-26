@@ -1341,6 +1341,15 @@ pub struct EntityPass {
     /// boat's water patch.
     water_mask_pipeline: vk::Pipeline,
     water_mask_verts: u32,
+    /// Entity shadows (`RenderPipelines.ENTITY_SHADOW`): `misc/shadow.png` on
+    /// its own sheet (NEAREST, clamped in the shader), a translucent
+    /// gamma-space pipeline that tests `GREATER_OR_EQUAL` and writes no
+    /// depth, the last range. [`Self::set_shadows`] stages the pieces,
+    /// [`Self::set_draws`] turns them into vertices.
+    shadow: Option<EntityGlint>,
+    shadow_pipeline: Option<vk::Pipeline>,
+    shadow_verts: u32,
+    shadow_quads: Vec<ShadowQuad>,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -2193,6 +2202,10 @@ impl EntityPass {
                 translucent_verts: 0,
                 water_mask_pipeline,
                 water_mask_verts: 0,
+                shadow: None,
+                shadow_pipeline: None,
+                shadow_verts: 0,
+                shadow_quads: Vec::new(),
                 outline_verts: 0,
                 swirl: None,
                 swirl_pipeline: None,
@@ -3029,8 +3042,13 @@ impl EntityPass {
         sort_quads_back_to_front(&mut translucent_verts, cam_pos);
         verts.append(&mut translucent_verts);
         let translucent_end = verts.len();
-        // M363 — the water patches, last.
+        // M363 — the water patches.
         verts.append(&mut water_mask_verts);
+        let water_mask_end = verts.len();
+        // The shadows, last: drawn after everything else, so every offset
+        // above is unchanged.
+        let shadow_quads = std::mem::take(&mut self.shadow_quads);
+        verts.extend(shadow_vertices(&shadow_quads, cam_pos));
         let counts = [
             solid,
             text_end - solid,
@@ -3042,7 +3060,8 @@ impl EntityPass {
             swirl_end - outline_end,
             wind_end - swirl_end,
             translucent_end - wind_end,
-            verts.len() - translucent_end,
+            water_mask_end - translucent_end,
+            verts.len() - water_mask_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -3056,7 +3075,7 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11] = clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -3069,6 +3088,7 @@ impl EntityPass {
         self.wind_verts = s8;
         self.translucent_verts = s9;
         self.water_mask_verts = s10;
+        self.shadow_verts = s11;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -4973,6 +4993,98 @@ impl EntityPass {
         Ok(())
     }
 
+    /// The shadow sheet (`misc/shadow.png`) and its pipeline
+    /// (`RenderPipelines.ENTITY_SHADOW`), in the UNORM view's format. The sheet
+    /// is sampled NEAREST (its `.mcmeta` asks only for `clamp`) and the shader
+    /// clamps the uv, so a piece's uv outside `0..1` reads the transparent edge.
+    pub fn init_shadow(
+        &mut self,
+        gpu: &mut Gpu,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        color_format: vk::Format,
+    ) -> Result<(), String> {
+        if self.shadow.is_some() {
+            return Ok(());
+        }
+        let sheet = self.load_sheet(gpu, rgba, w, h, color_format, vk::Filter::NEAREST)?;
+        if self.shadow_pipeline.is_none() {
+            self.shadow_pipeline = Some(build_sheet_pipeline(
+                &gpu.device,
+                self.layout,
+                color_format,
+                include_bytes!(concat!(env!("OUT_DIR"), "/entity_shadow.frag.spv")),
+                SheetBlend::Shadow,
+            )?);
+        }
+        self.shadow = Some(sheet);
+        Ok(())
+    }
+
+    /// Stage this frame's shadow pieces; the next [`Self::set_draws`] turns
+    /// them into the shadow range. Pieces staged and never drawn (no sheet)
+    /// cost nothing.
+    pub fn set_shadows(&mut self, quads: Vec<ShadowQuad>) {
+        self.shadow_quads = quads;
+    }
+
+    /// Vertices in the shadow range for the last [`Self::set_draws`].
+    pub fn shadow_vertex_count(&self) -> u32 {
+        self.shadow_verts
+    }
+
+    /// `ShadowFeatureRenderer`: the translucent shadow pieces, gamma space,
+    /// depth `GREATER_OR_EQUAL` with no write, no culling. After the other
+    /// translucent entity layers and before the world's own translucent pass.
+    pub fn draw_shadow(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        let (Some(g), Some(pipeline)) = (self.shadow.as_ref(), self.shadow_pipeline) else {
+            return;
+        };
+        if self.shadow_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_bind_descriptor_sets(
+                cb,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.layout,
+                0,
+                &[g.set],
+                &[],
+            );
+            // The last range in the buffer.
+            device.cmd_draw(
+                cb,
+                self.shadow_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts
+                    + self.swirl_verts
+                    + self.wind_verts
+                    + self.translucent_verts
+                    + self.water_mask_verts,
+                0,
+            );
+        }
+    }
+
     /// Vertices in the wind range for the last [`Self::set_entities`].
     pub fn wind_vertex_count(&self) -> u32 {
         self.wind_verts
@@ -5503,6 +5615,7 @@ impl EntityPass {
                 self.swirl.take(),
                 self.wither_swirl.take(),
                 self.wind.take(),
+                self.shadow.take(),
             ] {
                 let Some(mut g) = sheet else { continue };
                 device.destroy_descriptor_pool(g.pool, None);
@@ -5520,6 +5633,9 @@ impl EntityPass {
                 device.destroy_pipeline(p, None);
             }
             if let Some(p) = self.wind_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
+            if let Some(p) = self.shadow_pipeline.take() {
                 device.destroy_pipeline(p, None);
             }
             if let Some(p) = self.translucent_pipeline.take() {
@@ -5544,6 +5660,88 @@ impl EntityPass {
             let _ = gpu.allocator.free(a);
         }
     }
+}
+
+/// One entity shadow piece in world space, as `ShadowFeatureRenderer.prepare`
+/// builds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowQuad {
+    /// Corners in the order the renderer emits them: `(x0, z0)`, `(x0, z1)`,
+    /// `(x1, z1)`, `(x1, z0)`, all at the piece's height.
+    pub corners: [[f32; 3]; 4],
+    /// The shadow sheet's uv at each corner.
+    pub uv: [[f32; 2]; 4],
+    /// `ARGB.white(piece.alpha())`'s alpha.
+    pub alpha: f32,
+}
+
+impl ShadowQuad {
+    /// `ShadowFeatureRenderer.prepare` for one `ShadowPiece`: `rel` is the
+    /// piece's cell relative to the entity at `entity_pos`, `bounds` the
+    /// block below's shape (`[minX, minY, minZ, maxX, maxY, maxZ]`). The sheet
+    /// spans `[-radius, radius]` around the entity, mirrored on both axes
+    /// (`u = -x / 2 / radius + 0.5`).
+    pub fn from_piece(
+        entity_pos: [f64; 3],
+        radius: f32,
+        rel: [f32; 3],
+        bounds: [f32; 6],
+        alpha: f32,
+    ) -> Self {
+        let x01 = rel[0] + bounds[0];
+        let x11 = rel[0] + bounds[3];
+        let y01 = rel[1] + bounds[1];
+        let z01 = rel[2] + bounds[2];
+        let z11 = rel[2] + bounds[5];
+        let u0 = -x01 / 2.0 / radius + 0.5;
+        let u1 = -x11 / 2.0 / radius + 0.5;
+        let v0 = -z01 / 2.0 / radius + 0.5;
+        let v1 = -z11 / 2.0 / radius + 0.5;
+        let at = |x: f32, z: f32| {
+            [
+                (entity_pos[0] + f64::from(x)) as f32,
+                (entity_pos[1] + f64::from(y01)) as f32,
+                (entity_pos[2] + f64::from(z)) as f32,
+            ]
+        };
+        Self {
+            corners: [at(x01, z01), at(x01, z11), at(x11, z11), at(x11, z01)],
+            uv: [[u0, v0], [u0, v1], [u1, v1], [u1, v0]],
+            alpha,
+        }
+    }
+}
+
+/// `LayeringTransform.VIEW_OFFSET_Z_LAYERING` under the perspective
+/// projection (`ProjectionType.PERSPECTIVE`: `matrix.scale(1 - bias / 4096)`
+/// with bias 1): the model-view matrix is scaled, pulling every vertex toward
+/// the camera so a shadow sitting exactly on a block's top face wins the depth
+/// test against it.
+const VIEW_OFFSET_Z_SCALE: f32 = 1.0 - 1.0 / 4096.0;
+
+/// The shadow range's vertices: each quad as two triangles (`0 1 2 0 2 3`),
+/// white with the piece's alpha, no light and no overlay, pulled toward the
+/// camera by [`VIEW_OFFSET_Z_SCALE`]. Bounded by [`MAX_VERTS`].
+fn shadow_vertices(quads: &[ShadowQuad], cam_pos: [f32; 3]) -> Vec<Vertex> {
+    let mut out = Vec::with_capacity(quads.len().min(MAX_VERTS / 6) * 6);
+    for q in quads.iter().take(MAX_VERTS / 6) {
+        let pulled: [[f32; 3]; 4] = q.corners.map(|c| {
+            [
+                cam_pos[0] + (c[0] - cam_pos[0]) * VIEW_OFFSET_Z_SCALE,
+                cam_pos[1] + (c[1] - cam_pos[1]) * VIEW_OFFSET_Z_SCALE,
+                cam_pos[2] + (c[2] - cam_pos[2]) * VIEW_OFFSET_Z_SCALE,
+            ]
+        });
+        for &i in &[0usize, 1, 2, 0, 2, 3] {
+            out.push(Vertex {
+                pos: pulled[i],
+                uv: q.uv[i],
+                color: [1.0, 1.0, 1.0, q.alpha],
+                light_hurt: [1.0, 1.0, 1.0, 0.0],
+            });
+        }
+    }
+    out
 }
 
 /// M285 — `MeshData.sortQuads` with `VertexSorting.DISTANCE_TO_ORIGIN` in
@@ -9427,6 +9625,9 @@ enum SheetBlend {
     /// M286 — `BREEZE_WIND`: `BlendFunction.TRANSLUCENT` `(SRC_ALPHA,
     /// ONE_MINUS_SRC_ALPHA)`, depth `GREATER_OR_EQUAL` with writes.
     Wind,
+    /// `ENTITY_SHADOW`: the same blend, depth `GREATER_OR_EQUAL` WITHOUT
+    /// writes (`DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false)`).
+    Shadow,
 }
 
 /// M287 — the energy-swirl sheets, one render type each.
@@ -9528,15 +9729,19 @@ fn build_sheet_pipeline(
                     .depth_write_enable(true)
                     .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL)
             }
+            SheetBlend::Shadow => vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
         };
         let src = match blend {
             SheetBlend::Glint => vk::BlendFactor::SRC_COLOR,
             SheetBlend::Swirl => vk::BlendFactor::ONE,
-            SheetBlend::Wind => vk::BlendFactor::SRC_ALPHA,
+            SheetBlend::Wind | SheetBlend::Shadow => vk::BlendFactor::SRC_ALPHA,
         };
         let dst = match blend {
             SheetBlend::Glint | SheetBlend::Swirl => vk::BlendFactor::ONE,
-            SheetBlend::Wind => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            SheetBlend::Wind | SheetBlend::Shadow => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
         };
         let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
             .blend_enable(true)
@@ -12242,6 +12447,94 @@ mod drowned_arm_anim_tests {
         let drowned = anim_delta(mobs::Anim::DrownedArmRight, 1.0, &throw).0;
         assert!((drowned[0] - (zombie[0] * 0.5 - PI)).abs() < 1e-6);
         assert_eq!(drowned[1], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::*;
+
+    /// `ShadowFeatureRenderer.prepare`, worked by hand: a player (radius 0.5)
+    /// at (10.5, 64, 20.5) over the block cell (10, 64, 20), so the piece is
+    /// 0.5 behind and to the left of the entity in x and z. Its x extent is
+    /// `-0.5 + 0 ..= -0.5 + 1` = `-0.5..0.5`, so `u = -x / 2 / 0.5 + 0.5` runs
+    /// 1.0 (at -0.5) to 0.0 (at 0.5): the sheet is mirrored, and exactly
+    /// covers the radius box.
+    #[test]
+    fn a_piece_maps_the_sheet_over_the_radius_box_mirrored() {
+        let q = ShadowQuad::from_piece(
+            [10.5, 64.0, 20.5],
+            0.5,
+            [-0.5, 0.0, -0.5],
+            [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            0.5,
+        );
+        assert_eq!(
+            q.corners,
+            [
+                [10.0, 64.0, 20.0],
+                [10.0, 64.0, 21.0],
+                [11.0, 64.0, 21.0],
+                [11.0, 64.0, 20.0],
+            ]
+        );
+        assert_eq!(q.uv, [[1.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(q.alpha, 0.5);
+    }
+
+    /// A shape inside its block (a 14/16 chest-high ground, say) offsets the
+    /// quad by the shape's min corner and narrows its extent, and a piece out
+    /// past the radius has uv outside `0..1` (the shader clamps it to the
+    /// transparent edge).
+    #[test]
+    fn a_partial_shape_and_a_far_piece() {
+        let q = ShadowQuad::from_piece(
+            [0.0, 10.0, 0.0],
+            1.0,
+            [3.0, -1.0, 0.0],
+            [0.25, 0.0, 0.0, 0.75, 1.0, 0.5],
+            1.0,
+        );
+        // x: 3.25..3.75, y: the cell's bottom (-1) + minY 0, z: 0..0.5.
+        assert_eq!(q.corners[0], [3.25, 9.0, 0.0]);
+        assert_eq!(q.corners[2], [3.75, 9.0, 0.5]);
+        let u0 = -3.25f32 / 2.0 / 1.0 + 0.5;
+        assert_eq!(q.uv[0][0], u0);
+        assert!(u0 < 0.0, "outside the sheet: {u0}");
+    }
+
+    /// Six vertices per quad in `0 1 2 0 2 3` order, white with the alpha, no
+    /// light or overlay terms, and every position pulled toward the camera by
+    /// exactly `1 - 1/4096` of its offset from it.
+    #[test]
+    fn the_range_is_triangles_pulled_toward_the_camera() {
+        let q = ShadowQuad {
+            corners: [
+                [100.0, 64.0, 0.0],
+                [100.0, 64.0, 1.0],
+                [101.0, 64.0, 1.0],
+                [101.0, 64.0, 0.0],
+            ],
+            uv: [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+            alpha: 0.25,
+        };
+        let cam = [0.0, 66.0, 0.0];
+        let v = shadow_vertices(&[q, q], cam);
+        assert_eq!(v.len(), 12);
+        let order = [0usize, 1, 2, 0, 2, 3];
+        for (k, vert) in v[..6].iter().enumerate() {
+            let c = q.corners[order[k]];
+            assert_eq!(vert.uv, q.uv[order[k]]);
+            assert_eq!(vert.color, [1.0, 1.0, 1.0, 0.25]);
+            assert_eq!(vert.light_hurt, [1.0, 1.0, 1.0, 0.0]);
+            for a in 0..3 {
+                let want = cam[a] + (c[a] - cam[a]) * (4095.0 / 4096.0);
+                assert!((vert.pos[a] - want).abs() < 1e-4, "axis {a}");
+            }
+            // Toward the camera, never past it.
+            assert!(vert.pos[0] < c[0] && vert.pos[1] > c[1]);
+        }
+        assert!(shadow_vertices(&[], cam).is_empty());
     }
 }
 
