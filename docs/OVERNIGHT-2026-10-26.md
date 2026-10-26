@@ -37,7 +37,7 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   live client under water draws the water's fog), M425 (and its clouds
   fade at the water's band, r231), M426 (horses graze), M427 (the fog darkens toward the void, under y −32), M428 (foals walk,
   look, rear and graze), M429 (donkey and mule foals too), M430 (the hand's glint fades in
-  the fog); the
+  the fog), M431 (the inventory preview wears your armour's trims); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -140,6 +140,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
 | `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
 | `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
+| (next) | **M431** — the inventory preview's armour trims; capeshot p9 |
 
 ## A broken default build, fixed
 
@@ -188,8 +189,8 @@ major bumps, so the next weekly group arrives without it.
   Foals: M428 and M429 (donkey and mule).
 - ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
   draws the vanilla cape).
-- ~~The inventory preview draws no armour~~: M414; its glints M418. Left:
-  its trims (their sprites live in the world pass's pool).
+- ~~The inventory preview draws no armour~~: M414; its glints M418; its
+  trims M431.
 - ~~Remote players' motion is applied directly~~: M415.
 - ~~Baby humanoids wear no armour~~: M416. Found on the way: M403's baby
   elytra was 12 px too high (fixed there too).

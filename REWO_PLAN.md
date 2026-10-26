@@ -4023,6 +4023,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M431 — the inventory preview's armour trims (2026-10-26)
+
+The last of M414's leftovers. Trim sprites live in a pass's own pool, and the preview is its own `EntityPass` with its own atlas, so the world's slots address nothing there. `ensure_trims` now has a core, `ensure_trims_for`, over any wearers' four slots and into any pool (the world's entities into the entity pass; the local player's armour, M414's `ItemSlot::worn` with its trim pattern, into the preview's through `WorldRenderer::upload_preview_trim`), and `preview_equipment` takes the trim lookup `armor_keys_of` asks. The GUI pass draws the preview's trim range between its two foils, the world pass's order. **capeshot p9** (a green trim sprite handed to a previewed chestplate draws 150 px of it; 0 without).
+
 ### M430 — the hand's glint fades in the fog (2026-10-26)
 
 M423's leftover. Vanilla's glint is `(1 − fog) · GlintAlpha`, and the hand inherits the world's fog, so in water, lava or blindness its enchantment sheen fades with it. `gui_glint.frag` is compiled a second time with `-DHAND_FOG` as `hand_glint.frag` (the GUI and preview glints keep the unfogged one): it reads the hand's fog words and `hand.vert`'s `v_dist` and multiplies the sheen by `1 − linear_fog_value` over the environmental band; the hand pass's glint pipeline uses it and pushes the fog range too. **handshot g9** (in clear air an enchanted hand differs from a plain one; under a band ending at 0.01 blocks the two frames are byte-identical).

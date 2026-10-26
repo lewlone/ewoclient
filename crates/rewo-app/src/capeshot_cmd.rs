@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 76;
+const EXPECTED_WITNESSES: usize = 77;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -2168,6 +2168,7 @@ fn check_pixels(
                     Some(p_origin),
                     &f.items,
                     &f.equipment,
+                    |_, _, _| None,
                 )
             };
             let mut prev_dressed = |chest: i32| -> Result<Vec<u8>, String> {
@@ -2223,6 +2224,7 @@ fn check_pixels(
                     Some(p_origin),
                     &f.items,
                     &f.equipment,
+                    |_, _, _| None,
                 );
                 let mut d = player_draw(e.cape);
                 d.armor = e.armor;
@@ -2244,6 +2246,45 @@ fn check_pixels(
                 format!(
                     "{shimmer} px differ between the plain and the enchanted chestplate \
                      (want > 20; the sheen is sparse in a window this small). Before \n                     M418 the preview had no glint pass, and 0 differed"
+                ),
+            );
+            // M431 — a trimmed chestplate: a green trim sprite in the
+            // preview's own pool, handed back by the trim lookup, draws over
+            // the chestplate (the preview drew no trim range before).
+            let sprite: Vec<u8> = (0..64 * 32).flat_map(|_| [0u8, 255, 0, 255]).collect();
+            let green_trim = wr
+                .upload_preview_trim(gpu, "rewo:capeshot_trim", &sprite, 64, 32)
+                .ok_or("preview trim upload failed")?;
+            let mut prev_trim = |trimmed: bool| -> Result<Vec<u8>, String> {
+                let e = crate::live_cmd::preview_equipment(
+                    [None, Some(worn(f.chestplate)), None, None],
+                    Some(p_origin),
+                    &f.items,
+                    &f.equipment,
+                    |_, _, _| trimmed.then_some(green_trim),
+                );
+                let mut d = player_draw(e.cape);
+                d.armor = e.armor;
+                wr.set_preview(Some((&d, vp_prev, rect)));
+                off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+                off.read_rgba(gpu)
+            };
+            let (p_plain_c, p_trim_c) = (prev_trim(false)?, prev_trim(true)?);
+            let green = |img: &[u8]| {
+                img.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[1] > 150 && p[0] < 90 && p[2] < 90)
+                    .count()
+            };
+            c.record(
+                "p9.a_trimmed_chestplate_wears_its_trim_in_the_preview",
+                green(&p_trim_c) > 50 && green(&p_plain_c) == 0,
+                format!(
+                    "{} trim-green px with the trim, {} without (want > 50 and 0). \
+                     Before M431 the preview had no trim range",
+                    green(&p_trim_c),
+                    green(&p_plain_c)
                 ),
             );
             // M292 — the mount screen's window: a donkey, through the

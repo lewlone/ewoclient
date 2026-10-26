@@ -750,10 +750,13 @@ impl WorldRenderer {
                 // the armour foil (an elytra's too), then the held stacks',
                 // in gamma space as the world's and the hand's are. The
                 // preview has no trims to draw between them (M414).
+                // M431 — and the armour trims between the two foils, as
+                // the world pass orders them.
                 self.in_gamma_space(gpu, cb, extent, || {
-                    preview.draw_armor_glint(gpu, cb, vp, extent);
-                    preview.draw_glint(gpu, cb, vp, extent);
+                    preview.draw_armor_glint(gpu, cb, vp, extent)
                 });
+                preview.draw_trim(gpu, cb, vp, extent);
+                self.in_gamma_space(gpu, cb, extent, || preview.draw_glint(gpu, cb, vp, extent));
             }
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);

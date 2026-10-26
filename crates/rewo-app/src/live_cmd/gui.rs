@@ -144,8 +144,8 @@ pub(crate) fn preview_cape(origin: Option<(u32, u32)>) -> Option<rewo_gpu::entit
 }
 
 /// M414 — what the inventory preview wears: the local player's four armour
-/// slots (head first) as [`armor_keys_of`] resolves any wearer's, without
-/// trims (they live in the world pass's pool, not the preview's), the
+/// slots (head first) as [`armor_keys_of`] resolves any wearer's (M431:
+/// `trim` places a piece's trim in the preview's own pool), the
 /// elytra at rest (`ELYTRA_REST`: a still player's settled wings; on the
 /// cape sheet the preview holds, as `getPlayerElytraTexture` takes it), and
 /// the cape behind `CapeLayer`'s chest gates.
@@ -160,6 +160,11 @@ pub(crate) fn preview_equipment<'a>(
     cape_origin: Option<(u32, u32)>,
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
+    trim: impl Fn(
+        &rewo_world::entities::WornPiece,
+        &str,
+        rewo_data::equipment::ArmorLayer,
+    ) -> Option<(u32, u32)>,
 ) -> PreviewEquipment<'a> {
     let cape = super::entities::cape_chest_gates(worn[1], items, equipment).and_then(|humanoid| {
         preview_cape(cape_origin).map(|c| rewo_gpu::entities::CapeDraw {
@@ -168,7 +173,7 @@ pub(crate) fn preview_equipment<'a>(
         })
     });
     PreviewEquipment {
-        armor: super::entities::armor_keys_of(worn, false, items, equipment, |_, _, _| None),
+        armor: super::entities::armor_keys_of(worn, false, items, equipment, trim),
         wings: super::entities::wings_of(
             worn[1],
             cape_origin,

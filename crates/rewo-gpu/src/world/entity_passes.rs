@@ -456,6 +456,19 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// M431 — one trim sprite into the preview's own trim pool (its atlas is
+    /// not the world pass's, so the world's slots address nothing here).
+    pub fn upload_preview_trim(
+        &mut self,
+        gpu: &mut Gpu,
+        key: &str,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+    ) -> Option<(u32, u32)> {
+        self.preview.as_mut()?.upload_trim(gpu, key, rgba, w, h)
+    }
+
     /// M418 — the preview's own glint pipelines and sheets (the item glint
     /// and the armour glint, `(rgba, w, h)` each), as the world pass's
     /// [`Self::init_entity_glint`] / [`Self::init_entity_armor_glint`] build

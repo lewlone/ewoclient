@@ -992,11 +992,24 @@ pub(super) fn apply_screen(
             }
             None => (None, false, None),
         };
+        // M431 — the local armour's trims, permuted into the preview's pool.
+        let local = super::gui::local_worn(&session.inventory);
+        let preview_trims = super::entities::ensure_trims_for(
+            session,
+            std::iter::once(local),
+            items,
+            &baked.trims,
+            |key, rgba, w, h| wr.upload_preview_trim(gpu, key, rgba, w, h),
+        );
         let worn = super::gui::preview_equipment(
-            super::gui::local_worn(&session.inventory),
+            local,
             cape_origin,
             items,
             &baked.equipment,
+            |piece, asset, layer| {
+                super::entities::trim_sprite_path(session, piece, asset, layer)
+                    .and_then(|p| preview_trims.get(&p).copied())
+            },
         );
         let (mut draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse, worn);
         // M418 — `hasFoil()` of what the preview holds.

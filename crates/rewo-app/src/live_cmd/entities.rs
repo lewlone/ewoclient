@@ -3798,13 +3798,32 @@ pub(crate) fn ensure_trims(
     gpu: &mut Gpu,
     wr: &mut WorldRenderer,
 ) -> std::collections::HashMap<String, (u32, u32)> {
+    let ents = &session.world.entities;
+    ensure_trims_for(
+        session,
+        ents.iter().map(|(id, _)| ents.armor(id)),
+        items,
+        trims,
+        |key, rgba, w, h| wr.upload_entity_trim(gpu, key, rgba, w, h),
+    )
+}
+
+/// M431 — [`ensure_trims`] over any wearers' four slots (head first) and
+/// into any pass's pool (`upload`): the world's entities into the entity
+/// pass, the local player's armour into the inventory preview's.
+pub(crate) fn ensure_trims_for(
+    session: &PlaySession,
+    wearers: impl Iterator<Item = [Option<rewo_world::entities::WornPiece>; 4]>,
+    items: &rewo_data::items::Items,
+    trims: &rewo_data::equipment::TrimAssets,
+    mut upload: impl FnMut(&str, &[u8], u32, u32) -> Option<(u32, u32)>,
+) -> std::collections::HashMap<String, (u32, u32)> {
     use rewo_data::equipment::ArmorLayer;
     let mut out = std::collections::HashMap::new();
     if trims.is_empty() {
         return out;
     }
-    for (id, _) in session.world.entities.iter() {
-        let worn = session.world.entities.armor(id);
+    for worn in wearers {
         for (i, piece) in worn.iter().enumerate() {
             let Some(piece) = piece else { continue };
             if piece.trim.is_none() {
@@ -3835,7 +3854,7 @@ pub(crate) fn ensure_trims(
             };
             let Some(o) = trims
                 .permute(stem, suffix)
-                .and_then(|(rgba, w, h)| wr.upload_entity_trim(gpu, &path, &rgba, w, h))
+                .and_then(|(rgba, w, h)| upload(&path, &rgba, w, h))
             else {
                 continue;
             };
