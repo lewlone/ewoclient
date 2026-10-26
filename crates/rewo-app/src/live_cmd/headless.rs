@@ -845,6 +845,7 @@ pub(super) fn run_headless(
             backdrop: l.backdrop,
         })
         .collect();
+    world_renderer.set_entity_nether_light(nether_entity_light(&session));
     world_renderer.set_entities_and_block_entities(
         &draws,
         &be_draws,

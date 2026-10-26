@@ -364,6 +364,15 @@ impl WorldRenderer {
         self.set_entities_and_block_entities(draws, &[], &[], &[], cam_right, cam_up, time);
     }
 
+    /// M436 — whether this dimension's entities take the Nether light pair
+    /// (`DimensionType.cardinalLightType() == NETHER`). Set every frame,
+    /// before the draws are emitted.
+    pub fn set_entity_nether_light(&mut self, nether: bool) {
+        if let Some(pass) = self.entities.as_mut() {
+            pass.nether_light = nether;
+        }
+    }
+
     /// [`Self::set_entities`] plus the frame's block entities (M25b). They
     /// share the entity pass's buffer, atlas and shader — a chest is textured
     /// geometry at a world position, which is what that pass already draws.

@@ -2319,6 +2319,10 @@ impl LiveApp {
             rc.crowd_same_kind_max = rc.crowd_same_kind_max.max(same);
             rc.crowd_kinds_max = rc.crowd_kinds_max.max(kinds.len());
         }
+        // M436 — the dimension's entity light pair.
+        state
+            .world_renderer
+            .set_entity_nether_light(nether_entity_light(session));
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,

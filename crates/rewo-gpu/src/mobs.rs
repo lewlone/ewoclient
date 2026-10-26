@@ -1474,6 +1474,44 @@ pub fn rotate_zyx(v: [f32; 3], rot: [f32; 3]) -> [f32; 3] {
     [x, y, z]
 }
 
+/// M436 — vanilla's `minecraft_mix_light` (`light.glsl`) for one entity
+/// face: `min(1, (max(0, L0·n) + max(0, L1·n)) · 0.6 + 0.4)`, over the face's
+/// outward WORLD normal `n`, with the level's two diffuse lights
+/// (`Lighting.DIFFUSE_LIGHT_0/1`, `(0.2, 1, −0.7)` and `(−0.2, 1, 0.7)`
+/// normalised; in a NETHER-lit dimension the second points down,
+/// `(−0.2, −1, 0.7)`). An axis-aligned face in the overworld: top 1.0,
+/// bottom 0.4, north/south 0.7396, east/west 0.4970. Until M436 every entity
+/// face took [`shade_for`]'s fixed table by model face, so a mob's sides read
+/// 0.68 whichever way it faced.
+pub(crate) fn mix_light(n: [f32; 3], nether: bool) -> f32 {
+    let unit = |v: [f32; 3]| {
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len < 1e-6 {
+            [0.0; 3]
+        } else {
+            [v[0] / len, v[1] / len, v[2] / len]
+        }
+    };
+    let n = unit(n);
+    let l0 = unit([0.2, 1.0, -0.7]);
+    let l1 = unit(if nether {
+        [-0.2, -1.0, 0.7]
+    } else {
+        [-0.2, 1.0, 0.7]
+    });
+    let dot = |l: [f32; 3]| (l[0] * n[0] + l[1] * n[1] + l[2] * n[2]).max(0.0);
+    ((dot(l0) + dot(l1)) * 0.6 + 0.4).min(1.0)
+}
+
+/// [`mix_light`] for a normal in [`shade_for`]'s sense (a static-folded
+/// model-space normal, or a world quad's [`face_normal`]-style winding
+/// normal, both of which point world-DOWN on a top face): its negation is
+/// the outward world normal. The two lights are symmetric under
+/// `(x, z) → (−x, −z)`, so only the vertical sense has to be right.
+pub(crate) fn mix_light_flipped(n: [f32; 3], nether: bool) -> f32 {
+    mix_light([-n[0], -n[1], -n[2]], nether)
+}
+
 /// Directional shade for a static-folded model-space normal, matching the
 /// entity pass's classic 6-way table. Classified after the render y-flip:
 /// model −Y is the world-top (brightest), model −Z the front.
@@ -18336,5 +18374,24 @@ mod dragon_pose_tests {
         let (r, _) = dragon_flight_pose(&sit);
         let wave2 = (2.0f32 * 0.45).cos() * 0.15;
         assert!((r[n0 + 2][0] - (wave2 + 15f32.to_radians())).abs() < 1e-5);
+    }
+
+    /// M436 — `mix_light` against vanilla's numbers for the six axis faces,
+    /// and the Nether pair lighting a bottom face.
+    #[test]
+    fn mix_light_is_vanillas_two_light_formula() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(mix_light([0.0, 1.0, 0.0], false), 1.0));
+        assert!(close(mix_light([0.0, -1.0, 0.0], false), 0.4));
+        for n in [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+            assert!(close(mix_light(n, false), 0.739_627), "{n:?}");
+        }
+        for n in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]] {
+            assert!(close(mix_light(n, false), 0.497_009), "{n:?}");
+        }
+        // The Nether's second light points down: a floor's underside is lit.
+        assert!(mix_light([0.0, -1.0, 0.0], true) > 0.8);
+        // `shade_for`'s convention: world-down normal on a top face.
+        assert!(close(mix_light_flipped([0.0, -1.0, 0.0], false), 1.0));
     }
 }

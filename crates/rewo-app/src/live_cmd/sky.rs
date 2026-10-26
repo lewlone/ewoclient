@@ -143,6 +143,15 @@ pub(super) fn dimension_timeline(
     }
 }
 
+/// M436 — `Lighting.updateLevel`: a NETHER-lit dimension's entities take the
+/// Nether light pair. An unresolved dimension is the codec default.
+pub(super) fn nether_entity_light(session: &PlaySession) -> bool {
+    session
+        .active_dimension_type
+        .as_ref()
+        .is_some_and(|d| d.cardinal_light_type == rewo_world::dimension::CardinalLightType::Nether)
+}
+
 /// The dimension's skybox as the renderer's mode (`DimensionType.Skybox` ->
 /// `LevelRenderer.addSkyPass`). An unresolved dimension keeps the Overworld
 /// sky, which is the codec default for a missing `skybox` field anyway.

@@ -43,7 +43,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   M433 (mobs, block entities and dropped items too, and dyed armour), M434
   (the sky: midnight was 6x too bright, noon's fog colour lacked vanilla's
   lean toward the sky, the sun had no halo), M435 (clouds follow the
-  options: off is off, and the deck reaches vanilla's 128 chunks); the
+  options: off is off, and the deck reaches vanilla's 128 chunks), M436
+  (entities take vanilla's two-light shading by world normal); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -151,6 +152,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `5c6277b7` | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
 | `17a590fb` | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
+| (next) | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
 
 ## A broken default build, fixed
 
@@ -186,6 +188,11 @@ default build. Bisecting across that range needs `--features gates`.
   pump requested"), passed five of five alone. It gives the decode worker
   40 × 2 ms to open the stream; under the whole suite's load that is not
   always enough. The sound sink is the harness session's, so left to it.
+- **r37** (a `/give` chat line resolved): failed once in M436's run, 0 of
+  5876 frames drew "Gave 1 [Diamond Sword]" and none a raw key, so the line
+  never reached the chat at all (resolution would have drawn something);
+  the re-run drew it in 62 frames. Not investigated further; the next
+  sighting should log whether the server's feedback message arrived.
 
 ## Dependabot PR #6
 
@@ -220,11 +227,9 @@ major bumps, so the next weekly group arrives without it.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
 - ~~Entities shade in linear space~~: M433 (and dyed armour with them).
-- **Entity face shading is a table, not vanilla's two lights**: `shade_for`
-  gives five values by model face; vanilla's `minecraft_mix_light` lights
-  each face from two fixed world directions (an axis-aligned face: top 1.0,
-  bottom 0.4, north/south 0.74, east/west 0.50), so a mob's sides shade by
-  which way it faces. After M433 the zombie's shirt reads 134 against 129.
+- ~~Entity face shading is a table, not vanilla's two lights~~: M436.
+  Left: the inventory preview still lights as the level, where vanilla uses
+  its `ENTITY_IN_UI` pair.
 - ~~The sky reads too light~~: M434 (noon and midnight now byte-exact
   against vanilla on the harness).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing

@@ -1089,7 +1089,6 @@ fn build_emissive(
                 (oy as f32 + v.clamp(0.0, th as f32)) / ATLAS_H as f32,
             ]
         }),
-        shade: q.shade,
         part: q.part as u16,
         tex: q.tex as u8,
         facing: q.facing,
@@ -1262,6 +1261,9 @@ pub struct MobTextures<'a> {
 }
 
 pub struct EntityPass {
+    /// M436 — the dimension's cardinal lighting is NETHER: entity faces take
+    /// the Nether light pair (`Lighting.updateLevel`). Set every frame.
+    pub(crate) nether_light: bool,
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     solid_pipeline: vk::Pipeline,
@@ -1515,7 +1517,6 @@ struct EmissiveDraw {
 struct GpuQuad {
     pos: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
-    shade: f32,
     part: u16,
     /// Which of the mob's textures this samples (index into
     /// `MobDef::textures`). An ETF variant shifts each slot by its own offset,
@@ -1725,7 +1726,6 @@ impl EntityPass {
                     GpuQuad {
                         pos: q.pos,
                         uv: q.uv.map(|[u, v]| [u / tw, v / th]),
-                        shade: q.shade,
                         part: q.part as u16,
                         tex: q.tex as u8,
                         facing: q.facing,
@@ -1751,7 +1751,6 @@ impl EntityPass {
                     GpuQuad {
                         pos: q.pos,
                         uv,
-                        shade: q.shade,
                         part: q.part as u16,
                         tex: q.tex as u8,
                         facing: q.facing,
@@ -1826,7 +1825,6 @@ impl EntityPass {
                         .map(|q| GpuQuad {
                             pos: q.pos,
                             uv: q.uv.map(|[u, v]| [u / tw, v / th]),
-                            shade: q.shade,
                             part: q.part as u16,
                             tex: 0,
                             facing: q.facing,
@@ -1867,7 +1865,6 @@ impl EntityPass {
                     .map(|q| GpuQuad {
                         pos: q.pos,
                         uv: q.uv,
-                        shade: q.shade,
                         part: q.part as u16,
                         tex: 0,
                         facing: q.facing,
@@ -1880,7 +1877,6 @@ impl EntityPass {
             let raw = |q: &mobs::RawQuad| GpuQuad {
                 pos: q.pos,
                 uv: q.uv,
-                shade: q.shade,
                 part: q.part as u16,
                 tex: 0,
                 facing: q.facing,
@@ -2153,6 +2149,7 @@ impl EntityPass {
             )?;
 
             Ok(Self {
+                nether_light: false,
                 layout,
                 set_layout,
                 solid_pipeline,
@@ -3138,7 +3135,7 @@ impl EntityPass {
                 p4[i] = frame.place(v);
             }
             let n = face_normal(&m4);
-            let shade = mobs::shade_for(n);
+            let shade = mobs::mix_light_flipped(n, self.nether_light);
             let color = gamma_vertex(shade, [1.0; 3]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
@@ -3234,7 +3231,7 @@ impl EntityPass {
                 // M402 — the body's own frame (`EntityFrame`).
                 p4[i] = frame.place(v);
             }
-            let shade = mobs::shade_for(face_normal(&m4));
+            let shade = mobs::mix_light_flipped(face_normal(&m4), self.nether_light);
             let color = gamma_vertex(shade, [1.0; 3]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
@@ -3406,7 +3403,7 @@ impl EntityPass {
                 p4[i] = frame.place(v);
             }
             let n = face_normal(&p4);
-            let shade = mobs::shade_for(n);
+            let shade = mobs::mix_light_flipped(n, self.nether_light);
             let color = gamma_vertex(shade, [1.0; 3]);
             let uv4 = cape_face_uv(cape.origin, &uvs);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
@@ -3546,7 +3543,7 @@ impl EntityPass {
                 p4[i] = [d.pos[0] + l[0], d.pos[1] + l[1], d.pos[2] + l[2]];
             }
             let fnorm = face_normal(&p4);
-            let shade = mobs::shade_for(fnorm);
+            let shade = mobs::mix_light_flipped(fnorm, self.nether_light);
             let color = gamma_vertex(shade, [1.0; 3]);
             let uv4 = cape_face_uv(cape.origin, &q.uv);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
@@ -3616,7 +3613,7 @@ impl EntityPass {
                         (r[2] + pivot[2]) * k + 2.0,
                     ])
                 });
-                let shade = mobs::shade_for(face_normal(&p4));
+                let shade = mobs::mix_light_flipped(face_normal(&p4), self.nether_light);
                 let color = gamma_vertex(shade, [1.0; 3]);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
@@ -3758,7 +3755,7 @@ impl EntityPass {
                             p4[i] = frame.place(v);
                         }
                         let n = face_normal(&p4);
-                        let shade = mobs::shade_for(n);
+                        let shade = mobs::mix_light_flipped(n, self.nether_light);
                         // M433 — the dye is vanilla's colour, bytes over 255: multiplied with
                         // the shade on gamma-encoded numbers.
                         let color = gamma_vertex(shade, tint);
@@ -3930,6 +3927,25 @@ impl EntityPass {
             }
             p4
         };
+        // M436 — vanilla's `minecraft_mix_light` over the face's WORLD
+        // normal: the quad's model normal carried through the same part pose
+        // and frame its corners take (the model's y-down flip and the yaw
+        // included), so a mob's sides shade by which way it faces. The
+        // stored normal, not the winding: a mirrored box reverses its winding.
+        let nether = self.nether_light;
+        let shade_of = |q: &GpuQuad| -> f32 {
+            let (m, o) = &xf[q.part as usize];
+            let p = q.pos[0];
+            let at = |v: [f32; 3]| {
+                let r = mat_apply(m, v);
+                frame.place([r[0] + o[0], r[1] + o[1], r[2] + o[2]])
+            };
+            let (a, b) = (
+                at(p),
+                at([p[0] + q.normal[0], p[1] + q.normal[1], p[2] + q.normal[2]]),
+            );
+            mobs::mix_light([b[0] - a[0], b[1] - a[1], b[2] - a[2]], nether)
+        };
         // Per-part visibility (CEM bone hides + the vanilla shell / gesture /
         // illager swaps). Vanilla's emissive layers run the *same* `setupAnim`
         // on a copy of the model, so they obey exactly the same rules.
@@ -4088,7 +4104,7 @@ impl EntityPass {
             // same way. Linearized above: the tables are sRGB and the
             // attachment encodes on store (render discipline #1).
             let t = slot_tint[q.tex as usize];
-            let c = gamma_vertex(q.shade, t);
+            let c = gamma_vertex(shade_of(q), t);
             // Three things can move a quad's UVs onto a different texture of
             // the same size: a player's uploaded skin, a pack's ETF variant,
             // and (M175) a baby mob's whole-sheet swap. They never apply to
@@ -4180,7 +4196,7 @@ impl EntityPass {
                         return;
                     }
                     let p4 = place(q);
-                    let c = gamma_vertex(q.shade, *tint);
+                    let c = gamma_vertex(shade_of(q), *tint);
                     for &i in &[0usize, 1, 2, 0, 2, 3] {
                         out.push(Vertex {
                             pos: p4[i],
@@ -4232,7 +4248,7 @@ impl EntityPass {
                                 (ax as f32 + q.uv[i][0]) / ATLAS_W as f32,
                                 (ay as f32 + q.uv[i][1]) / ATLAS_H as f32,
                             ],
-                            color: gamma_vertex(q.shade, [1.0; 3]),
+                            color: gamma_vertex(shade_of(q), [1.0; 3]),
                             light_hurt: [light_r, light_g, light_b, 0.0],
                         });
                     }
@@ -4320,7 +4336,11 @@ impl EntityPass {
                     continue;
                 }
                 let p4 = place(q);
-                let c = if shaded { srgb_to_linear(q.shade) } else { 1.0 };
+                let c = if shaded {
+                    srgb_to_linear(shade_of(q))
+                } else {
+                    1.0
+                };
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     emis.push(Vertex {
                         pos: p4[i],
@@ -7971,7 +7991,7 @@ impl EntityPass {
                 // Shade from the rotated normal, for the same reason the item
                 // paths do: the baked face directions are pre-rotation.
                 let n = face_normal(&m4);
-                let shade = mobs::shade_for(n);
+                let shade = mobs::mix_light_flipped(n, self.nether_light);
                 // M433 — the banner's dye arrives linear; vanilla multiplies its bytes.
                 let color = gamma_vertex(shade, linear_to_srgb3(d.tint));
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
@@ -8051,7 +8071,7 @@ impl EntityPass {
                     m4[i] = p;
                     p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
                 }
-                let shade = mobs::shade_for(face_normal(&m4));
+                let shade = mobs::mix_light_flipped(face_normal(&m4), self.nether_light);
                 // M433 — the orb's tint arrives linear and unshaded; the shade folds in
                 // gamma space.
                 let color = bb.tint.map_or_else(
@@ -8179,7 +8199,7 @@ impl EntityPass {
                 // path does: a dropped item is rotating, so its baked face
                 // directions are not the directions it faces.
                 let n = face_normal(&m4);
-                let shade = mobs::shade_for(n);
+                let shade = mobs::mix_light_flipped(n, self.nether_light);
                 let color = gamma_vertex(shade, [1.0; 3]);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {

@@ -32,7 +32,9 @@
 //!   alone sets a band), and this gate draws at `light = [1,1,1]`, so the
 //!   light factor is the identity;
 //! * `v_color.rgb` is `q.shade * slot_tint`, and `mobs::shade_for` returns one
-//!   of **five** values — re-declared as [`SHADES`] here rather than imported,
+//!   of **five** values (M436: vanilla's `mix_light`, anything in
+//!   `[0.4, 1.0]` by the face's world normal — [`shade_range`]; the blend
+//!   oracle keeps the four axis values, [`SHADES`]) — re-declared here rather than imported,
 //!   per M93r: a witness that reads the constant the renderer reads grades
 //!   everything about the draw except the constant.
 //!
@@ -292,12 +294,25 @@ const TURTLE_MIN: [usize; 3] = [1000, 800, 2500];
 
 const BG: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
-/// `rewo_gpu::mobs::shade_for`'s five outputs, **re-declared** here.
-///
-/// Importing the function would make this witness self-calibrating on the one
-/// thing it multiplies by (M93r). These are the literals in `mobs.rs`; if that
-/// table changes, this gate must be updated deliberately.
-const SHADES: [f32; 5] = [1.0, 0.5, 0.80, 0.62, 0.68];
+/// M436 — vanilla's `minecraft_mix_light` over an axis-aligned face in the
+/// overworld, **re-declared** here (M93r: importing the renderer's function
+/// would make this witness self-calibrating on what it multiplies by): top
+/// 1.0, bottom `0.4` (the ambient), north/south `0.739 627`, east/west
+/// `0.497 009` (`(0.2, 1, ∓0.7)` normalised, `· 0.6 + 0.4`). Until M436 the
+/// renderer's own five-value table (`shade_for`).
+const SHADES: [f32; 4] = [1.0, 0.4, 0.739_627, 0.497_009];
+
+/// M436 — a face turned off the axes (a head looking 15°, a sitting body)
+/// takes any shade in vanilla's `[ambient 0.4, 1.0]`, so the sheet oracle
+/// grades against that whole range: `SHADE_STEPS` evenly spaced, close
+/// enough (0.004) that neighbours differ by at most a byte, which the ±1
+/// slack already covers.
+const SHADE_MIN: f32 = 0.4;
+const SHADE_STEPS: usize = 151;
+
+fn shade_range() -> impl Iterator<Item = f32> {
+    (0..SHADE_STEPS).map(|i| SHADE_MIN + (1.0 - SHADE_MIN) * i as f32 / (SHADE_STEPS - 1) as f32)
+}
 
 /// The per-slot tints a *neutral* draw can carry, sRGB, re-declared.
 ///
@@ -392,8 +407,12 @@ const MAX_SMALL: usize = 28;
 /// mule_baby. The imposter named for a kind can change between runs (the
 /// sheets are a hash map; any one that explains it is reported), the count
 /// does not. Sound but not discriminating, so the count is pinned rather than
-/// left to drift.
-const MAX_AMBIGUOUS: usize = 19;
+/// left to drift. M436 — 23: grading over vanilla's whole shade range
+/// (`[0.4, 1.0]`) instead of five fixed shades adds four, each a sheet any
+/// scale of another sheet's palette explains — goat, mooshroom, llama and
+/// horse babies against their adults, and the grey wither and skeleton horse
+/// (and skeleton, boat) against another grey sheet.
+const MAX_AMBIGUOUS: usize = 23;
 
 #[derive(ClapArgs)]
 pub struct MobtexshotArgs {
@@ -494,9 +513,9 @@ fn producible(rgba: &[u8]) -> HashSet<u32> {
             texels.insert(pack(px[0], px[1], px[2]));
         }
     }
-    let mut out = HashSet::with_capacity(texels.len() * SHADES.len() * TINTS.len());
+    let mut out = HashSet::with_capacity(texels.len() * SHADE_STEPS * TINTS.len());
     for t in texels {
-        for s in SHADES {
+        for s in shade_range() {
             for tint in TINTS {
                 out.insert(pack(
                     gamma_product((t >> 16) as u8, s, tint[0]),
