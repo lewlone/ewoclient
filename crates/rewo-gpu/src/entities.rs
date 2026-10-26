@@ -7785,6 +7785,30 @@ impl EntityPass {
 
         let [light_r, light_g, light_b] = d.light;
         for copy in &copies {
+            // The spun, placed corners of every quad of this copy.
+            let corners: Vec<[[f32; 3]; 4]> = placed
+                .iter()
+                .map(|quad| {
+                    std::array::from_fn(|i| {
+                        let p = quad[i];
+                        let p = [p[0] + copy[0], p[1] + copy[1], p[2] + copy[2]];
+                        // YP(spin).
+                        let p = [p[0] * cs + p[2] * ss, p[1], -p[0] * ss + p[2] * cs];
+                        [
+                            d.pos[0] + p[0],
+                            d.pos[1] + p[1] + bob + min_offset_y,
+                            d.pos[2] + p[2],
+                        ]
+                    })
+                })
+                .collect();
+            // A block model's faces are back-face culled in vanilla, so a
+            // camera INSIDE the cube sees none of them: a `/give` drops a fake
+            // item entity at the giver's eye (`Player.drop`), and in a frozen
+            // game it stays there. Without culling its walls fill the view.
+            if item.from_block && eye_inside(corners.iter().flatten(), self.cam_pos) {
+                continue;
+            }
             for (qi, q) in item.quads.iter().enumerate() {
                 if verts.len() + 6 > MAX_VERTS {
                     return;
@@ -7792,18 +7816,13 @@ impl EntityPass {
                 let Some([u0, v0, du, dv]) = self.item_uv(q.tex) else {
                     continue; // texture not resident — draw nothing, never garbage
                 };
-                let mut p4 = [[0f32; 3]; 4];
+                let p4 = corners[qi];
                 let mut m4 = [[0f32; 3]; 4];
                 for i in 0..4 {
-                    let p = placed[qi][i];
-                    let p = [p[0] + copy[0], p[1] + copy[1], p[2] + copy[2]];
-                    // YP(spin).
-                    let p = [p[0] * cs + p[2] * ss, p[1], -p[0] * ss + p[2] * cs];
-                    m4[i] = p;
-                    p4[i] = [
-                        d.pos[0] + p[0],
-                        d.pos[1] + p[1] + bob + min_offset_y,
-                        d.pos[2] + p[2],
+                    m4[i] = [
+                        p4[i][0] - d.pos[0],
+                        p4[i][1] - d.pos[1] - bob - min_offset_y,
+                        p4[i][2] - d.pos[2],
                     ];
                 }
                 // Shade from the spun normal, for the same reason the held
@@ -8653,6 +8672,21 @@ fn mat_mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
         }
     }
     out
+}
+
+/// Whether `eye` is inside the axis-aligned bounds of `points` (inclusive):
+/// the camera is within the model, where a culled closed model draws nothing.
+/// No points is nowhere.
+pub fn eye_inside<'a>(points: impl IntoIterator<Item = &'a [f32; 3]>, eye: [f32; 3]) -> bool {
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for p in points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    (0..3).all(|k| lo[k] <= eye[k] && eye[k] <= hi[k])
 }
 
 /// Unit normal of a quad from three of its corners, right-hand wound.
@@ -12119,5 +12153,37 @@ mod drowned_arm_anim_tests {
         let drowned = anim_delta(mobs::Anim::DrownedArmRight, 1.0, &throw).0;
         assert!((drowned[0] - (zombie[0] * 0.5 - PI)).abs() < 1e-6);
         assert_eq!(drowned[1], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod eye_inside_tests {
+    use super::eye_inside;
+
+    /// A dropped block's cube, 0.25 across, at the origin.
+    const CUBE: [[f32; 3]; 8] = [
+        [-0.125, 0.0, -0.125],
+        [0.125, 0.0, -0.125],
+        [0.125, 0.0, 0.125],
+        [-0.125, 0.0, 0.125],
+        [-0.125, 0.25, -0.125],
+        [0.125, 0.25, -0.125],
+        [0.125, 0.25, 0.125],
+        [-0.125, 0.25, 0.125],
+    ];
+
+    /// The camera inside the cube is inside; beside it, above it and at the
+    /// origin of a scene the cube is not at are not.
+    #[test]
+    fn the_eye_is_inside_only_within_the_bounds() {
+        assert!(eye_inside(CUBE.iter(), [0.0, 0.1, 0.0]));
+        assert!(eye_inside(CUBE.iter(), [0.125, 0.25, -0.125]), "inclusive");
+        assert!(!eye_inside(CUBE.iter(), [0.2, 0.1, 0.0]));
+        assert!(!eye_inside(CUBE.iter(), [0.0, 0.3, 0.0]));
+        assert!(!eye_inside(CUBE.iter(), [0.0, -0.01, 0.0]));
+        assert!(
+            !eye_inside(std::iter::empty(), [0.0; 3]),
+            "no model, nowhere"
+        );
     }
 }
