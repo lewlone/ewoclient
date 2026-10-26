@@ -11,9 +11,9 @@
 //! spawn); a needle with no valid target (the recovery compass before a
 //! death, any compass outside its target's dimension) rests at turn 0 where
 //! vanilla spins it at random; the owner's yaw is the head yaw where vanilla
-//! reads the body yaw (`yBodyRot`); an item held by another entity, lying on
-//! the ground or in a frame shows the first frame, since only the local
-//! player's needle is evaluated.
+//! reads the body yaw (`yBodyRot`); a compass held by another entity shows
+//! the local player's needle (vanilla evaluates it from that entity), and one
+//! lying on the ground or in a frame shows the first frame.
 
 use super::*;
 use rewo_data::item_models::{CompassAim, Needles, SelectionContext, Wobbler};
