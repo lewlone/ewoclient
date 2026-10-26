@@ -84,6 +84,31 @@ variant are random on both sides).
    tick, the world is not frozen, and the server drains air from the spawn, before tick 0.
    The pops are 30 ticks apart on both sides.
 
+6. **Screens** (a worker branch, merged): container titles and the "Inventory" label (with
+   each screen's own offsets: the stonecutter, loom, cartography table, merchant and beacon
+   overrides), the loom's banner preview, the stonecutter's and loom's button tooltips, and the
+   inventory's player model following the recipe-book-shifted panel. The Opus reviews of
+   `rewo_containers`, `rewo_loom`, `rewo_stonecutter` and `rewo_recipe_book` confirm each.
+   Still open: patterned banner icons (the loom preview shows the base and the pending layer;
+   earlier layers need the banner-pattern registry), and a hovered slot's icon reads pale
+   (both highlight sprites are drawn; a semi-transparent white blended in the linear
+   framebuffer is stronger than vanilla's gamma-space blend, which is the colour-space item).
+7. `options.renderClouds` is honoured (`"false"` drew clouds), and mounting shows vanilla's
+   "Press Left Shift to Dismount" (`mount.onboard`) on the action bar.
+
+### Corrections to the findings
+
+- **"The furnace output slot is empty" was the harness, not Rewo.** The server smelts in real
+  time; between the two scenario ticks the vanilla puppet spent 38 s (it runs slowly with a
+  screen open) and Rewo 2.5 s, so vanilla's furnace had smelted three ingots and Rewo's none
+  (8 raw iron and a barely started arrow, which is right). `rewo_crafting_furnace` now fills the
+  result slot by command.
+- **A mob's hurt and death sounds are not the client's.** `Entity.playSound` is
+  `level.playSound(null, ..)`, which a client level plays only for its own player; the server
+  broadcasts the mob's sound, and Rewo already played it. Only the local player's hurt and
+  death sounds are client-side (`Player.playSound` excepts itself); both are in now.
+  `rewo_combat` covers this (a first cut that played mob sounds locally doubled every one).
+
 Underwater fog moved to Enni's EwoClientV3 session (M422 on `claude/autonomous-run-1026`,
 every `FogRenderer` environment, render-check r230/r231).
 
@@ -156,7 +181,7 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 - **Holding a block item:** the first-person block is mostly hidden behind the hotbar, and behind
   an open container a giant copy of the block fills the view (`rewo_containers`, `rewo_audio_blocks`).
 - **Sky** (`rewo_sky_weather`): no sunrise or sunset glow and no dusk dimming; clouds are drawn
-  although `options.txt` has `renderClouds:"false"`.
+  although `options.txt` has `renderClouds:"false"` (**fixed, phase B 7**).
 - **Horse jump physics:** the horse jumps, but the rider's second-tick rise is 0.61 where vanilla's
   is 0.68, and the apex ends 0.15 blocks lower (`rewo_horse`, positions log). Worth checking
   against `AbstractHorse`'s jump in the decompile.
@@ -168,15 +193,15 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 
 ### Screens
 
-- Container screens draw **no title and no "Inventory" label** (Crafting, Chest, Barrel, Furnace,
+- **Fixed (phase B 6).** Container screens draw **no title and no "Inventory" label** (Crafting, Chest, Barrel, Furnace,
   Loom, Stonecutter).
-- The **furnace output slot is empty**: both furnaces smelted three raw iron (5 of 8 left), and
+- **Not a Rewo bug (see Corrections).** The **furnace output slot is empty**: both furnaces smelted three raw iron (5 of 8 left), and
   vanilla shows 3 iron ingots in the output where Rewo shows nothing.
-- **No tooltips** over the stonecutter's recipe buttons or the loom's patterns. Item-slot tooltips
+- **Fixed (phase B 6).** **No tooltips** over the stonecutter's recipe buttons or the loom's patterns. Item-slot tooltips
   work.
-- The **banner item has no icon** (loom banner and result slots), and the loom's **banner preview**
+- **Partly fixed (phase B 6).** The **banner item has no icon** (loom banner and result slots), and the loom's **banner preview**
   is an empty panel; the pattern list, selection and scrolling are right.
-- **Recipe book:** with the book open, the player model is drawn at the old panel position on top
+- **Model fixed (phase B 6); the list is open.** **Recipe book:** with the book open, the player model is drawn at the old panel position on top
   of the book while the player box is empty. The first tab's icon and the craftable filter button
   are missing, and the book lists 29 pages where vanilla's lists 11 (recipes not grouped into
   collections?).
