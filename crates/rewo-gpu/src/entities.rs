@@ -6270,6 +6270,86 @@ pub fn swim_tilt(swim: f32, in_water: bool, pitch_deg: f32) -> f32 {
     swim * target
 }
 
+/// `AbstractEquineModel.setupAnim`'s `headParts` (an adult: the layer's rest
+/// pivot is `(0, 4, -12)` with `xRot` π/6): the absolute angles and the pivot
+/// deltas against that rest, in model px.
+struct EquineHead {
+    x_rot: f32,
+    y_rot: f32,
+    y: f32,
+    z: f32,
+}
+
+fn equine_head_pose(c: &AnimCtx) -> EquineHead {
+    use std::f32::consts::PI;
+    let (eating, standing, feeding) = (c.mob.equine_eat, c.mob.equine_stand, c.mob.equine_feeding);
+    let lim = 20f32.to_radians();
+    let clamped = c.net.clamp(-lim, lim);
+    let mut head_rot_x = c.pitch;
+    if c.amt > 0.2 {
+        head_rot_x += mth_cos((c.pos * 0.8) as f64) * 0.15 * c.amt;
+    }
+    let calm = 1.0 - standing.max(eating);
+    let base = calm * (PI / 6.0 + head_rot_x + feeding * mth_sin(c.age as f64) * 0.05);
+    let x_rot = standing * (PI / 12.0 + head_rot_x)
+        + eating * (2.181_661_6 + mth_sin(c.age as f64) * 0.05)
+        + base;
+    let y_rot = standing * clamped + calm * clamped;
+    // `animateHeadPartsPlacement`: `y += lerp(eating, lerp(standing, 0, -8),
+    // 7)`, `z = lerp(standing, z, -4)` from the rest z of -12.
+    let lerp = |t: f32, a: f32, b: f32| a + t * (b - a);
+    EquineHead {
+        x_rot,
+        y_rot,
+        y: lerp(eating, lerp(standing, 0.0, -8.0), 7.0),
+        z: lerp(standing, -12.0, -4.0) - -12.0,
+    }
+}
+
+/// One equine leg's `setupAnim` output: the `xRot` and the pivot deltas
+/// (only the front legs move, 12 up and 4 forward, when rearing).
+struct EquineLegPose {
+    x_rot: f32,
+    y: f32,
+    z: f32,
+}
+
+fn equine_leg_pose(c: &AnimCtx, hind: bool, left: bool) -> EquineLegPose {
+    use std::f32::consts::PI;
+    let standing = c.mob.equine_stand;
+    let i_standing = 1.0 - standing;
+    let leg_anim = (c.f + PI).cos();
+    let leg_x_rot_anim = leg_anim * 0.8 * c.amt;
+    let stand_angle = PI / 12.0 * standing;
+    let bob = mth_cos((c.age * 0.6 + PI) as f64);
+    // `getLegStandingXRotOffset` is -π/3 for the adult.
+    let stand_x = -PI / 3.0;
+    if hind {
+        let swing = leg_anim * 0.5 * c.amt * i_standing;
+        EquineLegPose {
+            x_rot: if left {
+                stand_angle - swing
+            } else {
+                stand_angle + swing
+            },
+            y: 0.0,
+            z: 0.0,
+        }
+    } else {
+        // `leftFrontLeg.xRot = rlegRot`, `rightFrontLeg.xRot = llegRot`.
+        let x_rot = if left {
+            (stand_x + bob) * standing + leg_x_rot_anim * i_standing
+        } else {
+            (stand_x - bob) * standing - leg_x_rot_anim * i_standing
+        };
+        EquineLegPose {
+            x_rot,
+            y: -12.0 * standing,
+            z: 4.0 * standing,
+        }
+    }
+}
+
 fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 3]) {
     use mobs::Anim::*;
     use std::f32::consts::PI;
@@ -6340,25 +6420,18 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
                 off = [0.0, 9.0 * s, -2.0 * s];
             }
         }
-        // M359 — `AbstractEquineModel.setupAnim` (standing, not eating or
-        // rearing: Rewo draws neither).
+        // M359 — `AbstractEquineModel.setupAnim`; M-playtest: with the
+        // rearing, eating and feeding blends (`MobCombat::equine_*`).
         EquineHead => {
-            rot[0] = c.pitch
-                + if c.amt > 0.2 {
-                    (c.pos * 0.8).cos() * 0.15 * c.amt
-                } else {
-                    0.0
-                };
-            rot[1] = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
+            let h = equine_head_pose(c);
+            rot = [h.x_rot - PI / 6.0, h.y_rot, 0.0];
+            off = [0.0, h.y, h.z];
         }
+        EquineBody => rot[0] = -PI / 4.0 * c.mob.equine_stand,
         EquineLeg { hind, left } => {
-            let leg = (c.f + PI).cos();
-            rot[0] = match (hind, left) {
-                (false, true) => leg * 0.8 * c.amt,
-                (false, false) => -leg * 0.8 * c.amt,
-                (true, true) => -leg * 0.5 * c.amt,
-                (true, false) => leg * 0.5 * c.amt,
-            };
+            let l = equine_leg_pose(c, hind, left);
+            rot[0] = l.x_rot;
+            off = [0.0, l.y, l.z];
         }
         EquineTail => {
             rot[0] = c.amt * 0.75;
@@ -11250,6 +11323,103 @@ mod equine_anim_tests {
         let (r, o) = anim_delta(A::EquineTail, 1.0, &ctx(0.0, 0.0, 0.0, 0.0, 0.4));
         assert!((r[0] - 0.3).abs() < 1e-6 && o == [0.0, 0.4, 0.8]);
         let _ = PI;
+    }
+
+    fn with_equine(base: AnimCtx, eat: f32, stand: f32, feeding: f32) -> AnimCtx {
+        AnimCtx {
+            mob: mobs::MobCombat {
+                equine_eat: eat,
+                equine_stand: stand,
+                equine_feeding: feeding,
+                ..Default::default()
+            },
+            ..base
+        }
+    }
+
+    /// `AbstractEquineModel.setupAnim`, fully reared (`standing` 1, age 0):
+    /// the head group is `π/12 + headRotXRad` with its yaw as it was and the
+    /// pivot at `y - 8`, `z = -4` (a delta of +8 from the rest -12); the body
+    /// pitches -π/4; the front legs are `(-π/3 ± cos(π))` at `y - 12`,
+    /// `z + 4`, the hind legs at π/12. The deltas are against the rest
+    /// pose's π/6 on the head and 0 elsewhere.
+    #[test]
+    fn a_fully_reared_horse_follows_set_up_anim() {
+        use mobs::Anim as A;
+        let c = with_equine(ctx(0.1, 0.5, 0.0, 0.0, 0.0), 0.0, 1.0, 0.0);
+        let (r, o) = anim_delta(A::EquineHead, 1.0, &c);
+        assert!((r[0] - (PI / 12.0 + 0.1 - PI / 6.0)).abs() < 1e-6, "{r:?}");
+        // The yaw clamps to ±20° whatever the blend.
+        assert!((r[1] - 20f32.to_radians()).abs() < 1e-6);
+        assert!(
+            (o[1] + 8.0).abs() < 1e-6 && (o[2] - 8.0).abs() < 1e-6,
+            "{o:?}"
+        );
+        assert!((anim_delta(A::EquineBody, 1.0, &c).0[0] + PI / 4.0).abs() < 1e-6);
+        // cos(age * 0.6 + π) at age 0 is -1.
+        let front = |left| anim_delta(A::EquineLeg { hind: false, left }, 1.0, &c);
+        let (l, lo) = front(true);
+        let (rt, ro) = front(false);
+        assert!((l[0] - (-PI / 3.0 - 1.0)).abs() < 1e-6, "{l:?}");
+        assert!((rt[0] - (-PI / 3.0 + 1.0)).abs() < 1e-6, "{rt:?}");
+        assert_eq!((lo, ro), ([0.0, -12.0, 4.0], [0.0, -12.0, 4.0]));
+        for left in [true, false] {
+            let (h, ho) = anim_delta(A::EquineLeg { hind: true, left }, 1.0, &c);
+            assert!((h[0] - PI / 12.0).abs() < 1e-6 && ho == [0.0; 3]);
+        }
+    }
+
+    /// Eating: `eating * (2.1816616 + sin(age) * 0.05)` and the head group's
+    /// `y + 7`; the feeding blend adds `feeding * sin(age) * 0.05` to a calm
+    /// head only. At `age` π/2 `Mth.sin` is 1.
+    #[test]
+    fn an_eating_horse_lowers_its_head() {
+        use mobs::Anim as A;
+        let mut c = with_equine(ctx(0.0, 0.0, 0.0, 0.0, 0.0), 1.0, 0.0, 0.0);
+        c.age = PI / 2.0;
+        let (r, o) = anim_delta(A::EquineHead, 1.0, &c);
+        assert!(
+            (r[0] - (2.181_661_6 + 0.05 - PI / 6.0)).abs() < 2e-4,
+            "{r:?}"
+        );
+        assert_eq!(o, [0.0, 7.0, 0.0]);
+        // Open mouth, calm: the head bobs by feeding * sin(age) * 0.05.
+        let mut calm = with_equine(ctx(0.0, 0.0, 0.0, 0.0, 0.0), 0.0, 0.0, 1.0);
+        calm.age = PI / 2.0;
+        let (r, o) = anim_delta(A::EquineHead, 1.0, &calm);
+        assert!((r[0] - 0.05).abs() < 2e-4 && o == [0.0; 3], "{r:?}");
+    }
+
+    /// Half way up: every term blends by its own factor (`iStanding` scales
+    /// the walk). At `standing` 0.5, speed 1 and `f` 0 (`legAnim1` -1) the
+    /// left hind leg is `π/24 - (-1)(0.5)(1)(0.5)`.
+    #[test]
+    fn a_half_reared_horse_blends_the_walk_and_the_rear() {
+        use mobs::Anim as A;
+        let c = with_equine(ctx(0.0, 0.0, 0.0, 0.0, 1.0), 0.0, 0.5, 0.0);
+        let (h, _) = anim_delta(
+            A::EquineLeg {
+                hind: true,
+                left: true,
+            },
+            1.0,
+            &c,
+        );
+        assert!((h[0] - (PI / 24.0 + 0.25)).abs() < 1e-6, "{h:?}");
+        let (f, fo) = anim_delta(
+            A::EquineLeg {
+                hind: false,
+                left: true,
+            },
+            1.0,
+            &c,
+        );
+        // (-π/3 - 1) * 0.5 + (-1 * 0.8 * 1) * 0.5.
+        assert!(
+            (f[0] - ((-PI / 3.0 - 1.0) * 0.5 - 0.4)).abs() < 1e-6,
+            "{f:?}"
+        );
+        assert_eq!(fo, [0.0, -6.0, 2.0]);
     }
 }
 

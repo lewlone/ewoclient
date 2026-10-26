@@ -3131,6 +3131,11 @@ pub(crate) fn apply_set_entity_data<'a>(
             // its first byte is 18 as well (rolling 0x02, stung 0x04,
             // nectar 0x08).
             entities.set_bee_flags(eid, wool);
+        } else if kinds.classes.is_some_and(|c| c.is_abstract_horse(type_id)) {
+            // And `AbstractHorse.DATA_ID_FLAGS` (the horse family, camels and
+            // llamas included): tame 2, bred 8, eating 16, standing 32,
+            // open mouth 64. The rearing, eating and mouth clocks run off it.
+            entities.set_equine_flags(eid, wool);
         }
     }
     // M64: the six metadata-driven texture variants. Three carry a `Holder`
@@ -6947,6 +6952,38 @@ mod registry_kind_tests {
         assert_eq!(t.minecart_display(8), Default::default());
         apply_set_entity_data(&body(7, 11, 15, &[0]), &mut t, kinds);
         assert_eq!(t.minecart_display(7).custom_block, None);
+    }
+
+    /// `AbstractHorse.DATA_ID_FLAGS` is index 18 (`Mob` 15, `AgeableMob` 16
+    /// and 17): its standing bit (32) starts the stand clock on a horse, and
+    /// the same byte on a sheep (`DATA_WOOL_ID`) starts nothing.
+    #[test]
+    fn the_horse_flags_byte_starts_the_stand_clock_on_a_horse_only() {
+        let Some(paths) =
+            rewo_data::DataPaths::for_version("26.2").filter(|p| p.registries_json().exists())
+        else {
+            rewo_data::skip_test!("no local 26.2 datagen report");
+            return;
+        };
+        let types = rewo_data::entity_types::EntityTypes::load(&paths.registries_json()).unwrap();
+        let classes = rewo_data::entity_types::EntityClasses::resolve(&types).unwrap();
+        let horse = types.id_of("minecraft:horse").unwrap();
+        let sheep = types.id_of("minecraft:sheep").unwrap();
+        let kinds = crate::MetaKinds {
+            classes: Some(&classes),
+            sheep: Some(sheep),
+            ..Default::default()
+        };
+        let mut t = EntityTable::default();
+        t.add(7, EntityState::new(0, horse, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(8, EntityState::new(0, sheep, 0.0, 0.0, 0.0, 0.0, 0.0));
+        for eid in [7u8, 8] {
+            apply_set_entity_data(&[eid, 18, 0, 32, 0xFF], &mut t, kinds);
+        }
+        t.tick_lerp();
+        assert!((t.equine_anims(7, 1.0).1 - 0.45).abs() < 1e-6);
+        assert_eq!(t.equine_anims(8, 1.0), (0.0, 0.0, 0.0));
+        assert!(t.equine_standing(7).0 && !t.equine_standing(8).0);
     }
 }
 

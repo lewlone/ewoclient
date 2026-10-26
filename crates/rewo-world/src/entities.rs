@@ -586,6 +586,9 @@ pub struct EntityState {
     /// ±0.09 a tick toward 1 while visually swimming, else 0).
     pub swim_amount: f32,
     pub swim_amount_o: f32,
+    /// `AbstractHorse`'s rearing, eating and mouth clocks and its flags byte
+    /// ([`crate::equine`]); all zero for anything else.
+    equine: crate::equine::EquineAnim,
     /// `ClientboundAddEntityPacket.data` (M194) — per-type meaning; an item
     /// frame's facing (`Direction.from3DDataValue`). 0 when absent.
     pub spawn_data: i32,
@@ -683,6 +686,7 @@ impl EntityState {
             was_on_ground: false,
             swim_amount: 0.0,
             swim_amount_o: 0.0,
+            equine: crate::equine::EquineAnim::default(),
             spawn_data: 0,
         }
     }
@@ -2194,6 +2198,42 @@ impl EntityTable {
                 e.dash_cooldown = ticks;
             }
         }
+    }
+
+    /// `AbstractHorse.DATA_ID_FLAGS` (index 17 BYTE) arrived: the tame, bred,
+    /// eating, standing and open-mouth bits ([`crate::equine`]).
+    pub fn set_equine_flags(&mut self, id: i32, flags: u8) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.equine.set_flags(flags);
+        }
+    }
+
+    /// `AbstractHorse.onPlayerJump(amount)`'s rearing, run for the horse the
+    /// local player steers (`isEffectiveAi()` is then true): see
+    /// [`crate::equine::EquineAnim::on_player_jump`].
+    pub fn equine_on_player_jump(&mut self, id: i32, jump_amount: i32, can_rear: bool) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.equine.on_player_jump(jump_amount, can_rear);
+        }
+    }
+
+    /// The horse's rearing, eating and mouth clocks at partial tick `alpha`:
+    /// `(getEatAnim, getStandAnim, getMouthAnim)`, all 0 for anything else.
+    pub fn equine_anims(&self, id: i32, alpha: f32) -> (f32, f32, f32) {
+        self.map.get(&id).map_or((0.0, 0.0, 0.0), |e| {
+            (
+                e.equine.eat_anim(alpha),
+                e.equine.stand_anim(alpha),
+                e.equine.mouth_anim(alpha),
+            )
+        })
+    }
+
+    /// `isStanding()` and `allowStandSliding`, for `getRiddenInput`.
+    pub fn equine_standing(&self, id: i32) -> (bool, bool) {
+        self.map.get(&id).map_or((false, false), |e| {
+            (e.equine.is_standing(), e.equine.allow_stand_sliding())
+        })
     }
 
     /// `getJumpCooldown()` for a camel or nautilus (M169); 0 otherwise.
@@ -3744,6 +3784,8 @@ impl EntityTable {
             // FALL_FLYING (1) while not fall flying.
             let pose = self.poses.get(id).copied().unwrap_or(0);
             e.tick_swim(pose == 3 || (pose == 1 && !fall_flying));
+            // `AbstractHorse.tick`'s stand / eat / mouth clocks.
+            e.equine.tick();
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4054,6 +4096,7 @@ impl EntityTable {
             cube_size: self.sizes.get(&id).copied().unwrap_or(1),
             limb: e.limb(),
             baby,
+            stand_anim_o: e.equine.stand_anim_o(),
         })
     }
 

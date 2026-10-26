@@ -32,6 +32,7 @@ pub mod dimension;
 pub mod end_flash;
 pub mod entities;
 pub mod entity_pick;
+pub mod equine;
 pub mod fov;
 pub mod inventory;
 pub mod label;

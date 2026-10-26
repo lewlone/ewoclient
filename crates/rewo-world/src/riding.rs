@@ -104,6 +104,9 @@ pub struct VehicleInputs {
     /// `isBaby()` — the camel's sit anchor uses a different age offset from
     /// its uniform scale, so the flag is needed as well as the factor.
     pub baby: bool,
+    /// `AbstractHorse.standAnimO` — the rearing lift's factor; 0 for anything
+    /// that is not a horse (and for a horse at rest).
+    pub stand_anim_o: f32,
 }
 
 /// Everything about the rider the derivation reads.
@@ -133,14 +136,20 @@ pub fn passenger_attachment_point(
     let height = (vp.height * v.scale) as f64;
     let default = || transform(scaled(vp.passenger_point(r.index), v.scale), v.yaw);
     Some(match att.class(v.type_id) {
-        VehicleClass::Default | VehicleClass::Horse => {
-            // `AbstractHorse` adds `(0, 0.15·standAnimO·scale,
-            // -0.7·standAnimO·scale)` — the rearing lift. `standAnimO` is a
-            // client-simulated stand animation that no packet carries, and it
-            // is **0 whenever the horse is not rearing**, which is the term
-            // this reduces to. `Llama` overrides the horse back to the plain
-            // default, so the two coincide here.
-            default()
+        VehicleClass::Default => default(),
+        VehicleClass::Horse => {
+            // `AbstractHorse.getPassengerAttachmentPoint` adds
+            // `new Vec3(0, 0.15 * standAnimO * scale, -0.7 * standAnimO *
+            // scale).yRot(-getYRot() * (float) (Math.PI / 180.0))` — the
+            // rearing lift. `standAnimO` is the client's stand clock
+            // ([`crate::equine`]), 0 whenever the horse is not rearing.
+            let d = default();
+            let k = v.stand_anim_o as f64 * v.scale as f64;
+            let lift = y_rot(
+                [0.0, 0.15 * k, -0.7 * k],
+                -v.yaw * (std::f64::consts::PI / 180.0) as f32,
+            );
+            [d[0] + lift[0], d[1] + lift[1], d[2] + lift[2]]
         }
         VehicleClass::Boat { raft, chest } => {
             // `AbstractBoat` replaces the lookup outright — a boat's declared
@@ -273,6 +282,7 @@ mod tests {
     const SPIDER: i32 = 5;
     const VILLAGER: i32 = 6;
     const CART: i32 = 7;
+    const HORSE: i32 = 8;
 
     static GHAST_SEATS: &[[f64; 3]] = &[
         [0.0, 4.0, 1.7],
@@ -299,6 +309,7 @@ mod tests {
                 (SPIDER, p(1.4, 0.9, &[[0.0, 0.765, 0.0]], None)),
                 (VILLAGER, p(0.6, 1.95, &[], None)),
                 (CART, p(0.98, 0.7, CART_SEAT, None)),
+                (HORSE, p(1.3964844, 1.6, PIG_SEAT, None)),
             ],
             &[
                 (
@@ -309,6 +320,7 @@ mod tests {
                     },
                 ),
                 (CART, VehicleClass::Minecart),
+                (HORSE, VehicleClass::Horse),
             ],
             &[PIG],
             &[VILLAGER],
@@ -328,6 +340,7 @@ mod tests {
             cube_size: 1,
             limb: (0.0, 0.0),
             baby: false,
+            stand_anim_o: 0.0,
         }
     }
 
@@ -353,6 +366,41 @@ mod tests {
         assert!((p[0] - 10.0).abs() < 1e-9);
         assert!((p[1] - (64.0 + 0.86875 - 0.6)).abs() < 1e-9, "{p:?}");
         assert!((p[2] - -3.0).abs() < 1e-9);
+    }
+
+    /// `AbstractHorse.getPassengerAttachmentPoint` adds `(0, 0.15 * standAnimO
+    /// * scale, -0.7 * standAnimO * scale)` turned by `-yRot`: a fully reared
+    /// horse lifts its rider 0.15 and throws it 0.7 back along the horse's
+    /// own axis, and a half-reared one half of that.
+    #[test]
+    fn a_rearing_horse_lifts_and_throws_back_its_rider() {
+        let a = att();
+        let at = |yaw: f32, stand: f32, scale: f32| {
+            let mut v = vehicle(HORSE, [0.0, 0.0, 0.0], yaw, 1);
+            v.stand_anim_o = stand;
+            v.scale = scale;
+            rider_position(&a, &v, &rider(PLAYER, 0.0, 0)).unwrap()
+        };
+        let rest = at(0.0, 0.0, 1.0);
+        let up = at(0.0, 1.0, 1.0);
+        assert!((up[1] - rest[1] - 0.15).abs() < 1e-6, "{up:?} {rest:?}");
+        assert!((up[2] - rest[2] + 0.7).abs() < 1e-6 && (up[0] - rest[0]).abs() < 1e-6);
+        // Half reared is half the offset.
+        let half = at(0.0, 0.5, 1.0);
+        assert!((half[1] - rest[1] - 0.075).abs() < 1e-6);
+        assert!((half[2] - rest[2] + 0.35).abs() < 1e-6);
+        // A quarter turn (yaw 90 faces -x): backward is +x.
+        let turned = at(90.0, 1.0, 1.0);
+        let turned_rest = at(90.0, 0.0, 1.0);
+        assert!(
+            (turned[0] - turned_rest[0] - 0.7).abs() < 1e-5,
+            "{turned:?}"
+        );
+        assert!((turned[2] - turned_rest[2]).abs() < 1e-5);
+        // A foal's scale scales the lift.
+        let foal = at(0.0, 1.0, 0.5);
+        let foal_rest = at(0.0, 0.0, 0.5);
+        assert!((foal[1] - foal_rest[1] - 0.075).abs() < 1e-6);
     }
 
     #[test]

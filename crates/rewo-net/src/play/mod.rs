@@ -3211,6 +3211,19 @@ impl PlaySession {
                         if let Some(h) = self.steered_horse.as_mut() {
                             h.jump_pending = physics::jump_pending_scale(d);
                         }
+                        // `AbstractHorse.onPlayerJump`'s rearing: the local
+                        // player steers this horse, so `isEffectiveAi()` holds
+                        // and `standIfPossible()` runs here, ahead of the
+                        // server's own flag (which lands a tick or two later).
+                        if !nautilus {
+                            let can_rear = self
+                                .world
+                                .entities
+                                .get(h.id)
+                                .and_then(|e| self.entity_types.as_deref()?.name(e.type_id))
+                                .is_some_and(|n| rewo_world::equine::can_perform_rearing(camel, n));
+                            self.world.entities.equine_on_player_jump(h.id, d, can_rear);
+                        }
                     }
                 }
             } else {
@@ -6566,6 +6579,10 @@ impl PlaySession {
             camel,
             up: 0.0,
             floats_while_ridden,
+            rearing_in_place: {
+                let (standing, sliding) = self.world.entities.equine_standing(id);
+                standing && !sliding
+            },
         };
         let collide = std::mem::take(&mut self.collide);
         let block_physics = std::mem::take(&mut self.block_physics);

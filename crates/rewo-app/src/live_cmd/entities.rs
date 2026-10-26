@@ -1716,6 +1716,10 @@ pub(crate) fn resolve_mob_combat(
         allay_holding: 0.0,
         // M367 — set by the caller for a hoglin.
         headbutt: 0.0,
+        // Set by the caller for the horse family.
+        equine_eat: 0.0,
+        equine_stand: 0.0,
+        equine_feeding: 0.0,
         // M366 — set by the caller for a strider.
         ridden: false,
         // M365 — set by the caller for a turtle.
@@ -5552,6 +5556,21 @@ pub(super) fn collect_entities<'a>(
             EntityModelKind::Strider | EntityModelKind::StriderBaby
         ) {
             mob.ridden = !session.mounts.passengers(id).is_empty();
+        }
+        // `AbstractHorseRenderer.extractRenderState`: the eat, stand and
+        // mouth animations (`getEatAnim` / `getStandAnim` / `getMouthAnim`).
+        if matches!(
+            kind,
+            EntityModelKind::Horse
+                | EntityModelKind::Donkey
+                | EntityModelKind::Mule
+                | EntityModelKind::SkeletonHorse
+                | EntityModelKind::ZombieHorse
+        ) {
+            let (eat, stand, mouth) = session.world.entities.equine_anims(id, alpha);
+            mob.equine_eat = eat;
+            mob.equine_stand = stand;
+            mob.equine_feeding = mouth;
         }
         // M365 — `TurtleRenderer.extractRenderState`: the egg flags and
         // `isOnLand = !isInWater() && onGround()`. Rewo keeps no `onGround`
