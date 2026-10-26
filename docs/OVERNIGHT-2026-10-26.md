@@ -139,7 +139,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `2f8a563a` | **M427** — the fog darkens toward the void; unit test |
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
 | `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
-| (next) | **M430** — the hand's glint fades in the fog; handshot g9 |
+| `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
 
 ## A broken default build, fixed
 
