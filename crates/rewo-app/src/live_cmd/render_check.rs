@@ -307,6 +307,9 @@ pub(super) struct RenderCheck {
     /// M274 — r132: frames on which the staged armour stand drew wearing a
     /// carved pumpkin through the head item branch.
     pub(super) worn_item_head_frames: usize,
+    /// M408 — r229: frames on which the first-person off hand drew the
+    /// staged shield's pattern copy.
+    pub(super) hand_pattern_frames: u32,
     /// M407 — r228: frames on which the bot's staged sherd pot's icon
     /// resolved to its copy.
     pub(super) sherd_icon_frames: u32,
@@ -1346,7 +1349,7 @@ impl RenderCheck {
     /// same commit that adds a row, and take the next free id from
     /// `REWO_PLAN.md` §0.0's shared-resource allocation table rather than from
     /// "the highest one I can see" — that is how fifteen specs all chose r48.
-    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 228;
+    const EXPECTED_RENDER_CHECK_WITNESSES: usize = 229;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
     /// yaw. Before M361 it jumped by a tick's travel at every tick.
@@ -2450,6 +2453,14 @@ impl RenderCheck {
                 "{} frames drew it; turn range {turn:.3}",
                 self.enchant_book_frames
             ),
+        );
+        // M408 — r229: r101's off-hand shield carries a lime base colour;
+        // the first-person hand must draw its copy (before M408 the hand drew
+        // every head, banner, shield and pot plain).
+        row(
+            "r229 the first-person hand drew a held shield's pattern copy",
+            self.hand_pattern_frames >= 1,
+            format!("{} frames drew it", self.hand_pattern_frames),
         );
         // M407 — r228: `render_check.py` puts a decorated pot with the
         // angler sherd on its front in the bot's inventory slot 24 (menu
@@ -4978,7 +4989,9 @@ impl LiveApp {
                 );
                 cmd(
                     self,
-                    "item replace entity @s weapon.offhand with minecraft:shield",
+                    // M408 — r229: lime-based, so the first-person hand's
+                    // copy is visible (blocking is unchanged).
+                    "item replace entity @s weapon.offhand with minecraft:shield[minecraft:base_color=lime]",
                 );
                 if let Some(s) = self.session.as_mut() {
                     s.player.yaw = 0.0;

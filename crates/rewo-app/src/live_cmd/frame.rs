@@ -740,6 +740,10 @@ impl LiveApp {
                 // times a session), so its texture indices stay the bake's.
                 if let Some(g) = self.gui_items.as_mut() {
                     g.held = to_gpu_held_items(&baked.held_items);
+                    // M408 — and the hand pass's, which draws them too.
+                    if let Some(h) = self.hand.as_mut() {
+                        h.held = to_gpu_held_items(&baked.held_items);
+                    }
                 }
             }
         }
@@ -833,6 +837,10 @@ impl LiveApp {
                     .extend_held_items(new_models, new_textures);
                 // As for a skin (M275): the GUI pass's own copy, whole.
                 g.held = to_gpu_held_items(&baked.held_items);
+                // M408 — and the hand pass's.
+                if let Some(h) = self.hand.as_mut() {
+                    h.held = to_gpu_held_items(&baked.held_items);
+                }
             }
         }
         let head_models = head_skin_models(&session.world, &mut self.head_skins);
@@ -3308,10 +3316,21 @@ impl LiveApp {
                     session,
                     Some(&self.lang),
                     &items,
+                    self.gui_items.as_ref().map(|g| &g.variants),
                     h,
                     alpha,
                     sw / sh,
                 );
+                // M408 — r229: the off hand drew the staged shield's copy.
+                #[cfg(feature = "gates")]
+                if let Some(c) = self.check.as_mut() {
+                    if h.last_off_model
+                        .as_deref()
+                        .is_some_and(|m| m.starts_with("minecraft:shield#pattern"))
+                    {
+                        c.hand_pattern_frames += 1;
+                    }
+                }
                 // r69 — the injected off-hand map, with its data and its
                 // one decoration, reached the hand pass.
                 #[cfg(feature = "gates")]

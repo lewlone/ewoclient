@@ -747,6 +747,7 @@ pub(super) fn run_headless(
             &session,
             Some(&baked.lang),
             &items,
+            None,
             &mut hand,
             1.0,
             sw / sh,

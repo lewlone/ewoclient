@@ -467,6 +467,9 @@ pub struct HandState {
     /// M234 — the model name the main hand drew last frame (r100).
     #[cfg(feature = "gates")]
     pub(super) last_main_model: Option<String>,
+    /// M408 — and the off hand's (r229).
+    #[cfg(feature = "gates")]
+    pub(super) last_off_model: Option<String>,
     /// The tick the clocks were last advanced on, so they step once per client
     /// tick rather than once per frame.
     pub(super) last_tick: u64,
@@ -515,6 +518,8 @@ impl HandState {
             forced_attack: None,
             #[cfg(feature = "gates")]
             last_main_model: None,
+            #[cfg(feature = "gates")]
+            last_off_model: None,
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
             map_backgrounds: match (
@@ -762,6 +767,9 @@ pub(super) fn apply_hand(
     // M213 — the language a held map's banner names flatten with.
     lang: Option<&rewo_data::lang::Language>,
     items: &rewo_data::items::Items,
+    // M408 — the per-stack copies the icons use (a skinned head, a patterned
+    // banner, shield or pot), which the hand draws too.
+    variants: Option<&super::icons::IconVariants>,
     state: &mut HandState,
     partial: f32,
     aspect: f32,
@@ -786,8 +794,25 @@ pub(super) fn apply_hand(
             .filter(|s| s.item_id == id)
             .and_then(|s| session.stack_details.get(s.components))
             .and_then(|d| d.charged_projectile);
-        let name = use_model(items.name(id)?, local_use, hand, charged);
-        state.held.any(name).map(|m| (name, m))
+        let base = items.name(id)?;
+        let name = use_model(base, local_use, hand, charged);
+        // M408 — the stack's own copy, as its icon draws it (not while a use
+        // variant draws: a raised shield takes its blocking pose).
+        let variant = (name == base)
+            .then(|| {
+                stack
+                    .filter(|s| s.item_id == id)
+                    .zip(variants)
+                    .and_then(|(s, v)| variant_icon_model(&session.inventory, s, base, v))
+            })
+            .flatten();
+        match variant.and_then(|v| state.held.any(&v).map(|m| (v, m))) {
+            Some((v, m)) => Some((std::borrow::Cow::Owned(v), m)),
+            None => state
+                .held
+                .any(name)
+                .map(|m| (std::borrow::Cow::Borrowed(name), m)),
+        }
     };
     let main = model_of(
         state.main_equip.visible_item(),
@@ -795,14 +820,18 @@ pub(super) fn apply_hand(
     );
     #[cfg(feature = "gates")]
     {
-        state.last_main_model = main.map(|(n, _)| n.to_string());
+        state.last_main_model = main.as_ref().map(|(n, _)| n.to_string());
     }
     let main_item = main.map(|(_, m)| m);
-    let off_item = model_of(
+    let off = model_of(
         state.off_equip.visible_item(),
         rewo_world::entities::InteractionHand::OffHand,
-    )
-    .map(|(_, m)| m);
+    );
+    #[cfg(feature = "gates")]
+    {
+        state.last_off_model = off.as_ref().map(|(n, _)| n.to_string());
+    }
+    let off_item = off.map(|(_, m)| m);
 
     // M192 — `ItemInHandRenderer`'s map branch: a stack that `has(MAP_ID)`
     // is drawn as a map, two-handed in the main hand with an empty off-hand,

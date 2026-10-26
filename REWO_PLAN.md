@@ -2185,7 +2185,8 @@ this shape once.
 | M405 (2026-10-26) — a patterned banner item's icon wears its patterns | **r226** | — | — |
 | M406 (2026-10-26) — a dropped banner and a held shield draw their patterns | **r227** | — | — |
 | M407 (2026-10-26) — a decorated pot item's icon wears its sherds | **r228** | — | — |
-| *(next free)* | **r229** | — | — |
+| M408 (2026-10-26) — the first-person hand draws a held shield's pattern copy | **r229** | — | — |
+| *(next free)* | **r230** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already
 taken.** Four milestones added rows and none claimed one here, so the table
@@ -4019,6 +4020,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 "nothing can click the book" by M98. All are left as written on purpose:
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
+
+### M408 — the first-person hand draws a stack's own copy (2026-10-26)
+
+From the follow-ups ("skinned player heads in the first-person hand and on the cursor still draw Steve"). The hand pass resolved its model from the item name alone, against its own copy of the held items. It now asks `variant_icon_model` for the held stack (M275's skinned head, M405-M407's patterned banner, shield and pot), unless a use variant draws (a raised shield keeps its blocking pose), and its copy is rebuilt wherever the GUI pass's is. The cursor is still open. Render check **r229** (r101's off-hand shield now carries a lime base colour; the hand draws its copy, and the shield still blocks).
 
 ### M407 — decorated pot items wear their sherds (2026-10-26)
 
