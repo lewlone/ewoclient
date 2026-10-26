@@ -5325,3 +5325,52 @@ fn every_sheet_finds_room_in_the_entity_atlas() {
         Vec::<String>::new()
     );
 }
+
+// -- the hotbar under an open screen -------------------------------------
+
+/// `fillGradient(0, 0, w, h, 0xC0101010, 0xD0101010)` over a stored colour:
+/// per channel `c * (1 - a) + 0x10/255 * a`, `a` from 192/255 at the top to
+/// 208/255 at the bottom. The expectations are the decompile's two literals
+/// (`-1072689136`, `-804253680`) worked by hand: white is 0.2943 at the top
+/// and 0.2355 at the bottom, a 0.5 channel 0.1708 at the top.
+#[test]
+fn the_wash_over_a_colour_is_the_gradients_gamma_blend() {
+    assert_eq!(-1072689136_i32 as u32, 0xC010_1010);
+    assert_eq!(-804253680_i32 as u32, 0xD010_1010);
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    let top = super::gui::under_backdrop([1.0, 0.5, 0.0], 0.0, 240.0);
+    assert!(near(top[0], 0.2943), "{top:?}");
+    assert!(near(top[1], 0.17077), "{top:?}");
+    assert!(near(top[2], 0.047243), "{top:?}");
+    let bottom = super::gui::under_backdrop([1.0; 3], 240.0, 240.0);
+    assert!(near(bottom[0], 0.23549), "{bottom:?}");
+    // A zero-height screen does not divide by zero.
+    assert!(super::gui::under_backdrop([1.0; 3], 5.0, 0.0)[0].is_finite());
+}
+
+/// A white count under the wash is handed the colour the wash leaves (as
+/// linear light, which is what the text pass takes), and nothing else of the
+/// label changes.
+#[test]
+fn a_hotbar_count_is_dimmed_by_the_wash_and_keeps_its_place() {
+    let label = rewo_gpu::world::OwnedTextLine {
+        x: 10.0,
+        y: 700.0,
+        px: 3.0,
+        color_linear: [1.0; 3],
+        alpha: 1.0,
+        shadow: true,
+        style: rewo_gpu::text::TextStyle::PLAIN,
+        text: "4".into(),
+    };
+    let out = super::gui::dimmed_hotbar_labels(vec![label], 720.0);
+    assert_eq!(
+        (out[0].x, out[0].y, out[0].text.as_str()),
+        (10.0, 700.0, "4")
+    );
+    // y 700 of 720 -> a = (192 + 16 * 0.9722) / 255 -> 0.2371 in sRGB, which is
+    // 0.0459 as linear light.
+    let want = 0.0459;
+    assert!((out[0].color_linear[0] - want).abs() < 2e-3, "{:?}", out[0].color_linear);
+    assert!(out[0].color_linear[0] < 0.1, "darker than the plain white");
+}

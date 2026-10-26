@@ -37,7 +37,7 @@ use rewo_world::inventory::{
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 173;
+const EXPECTED_WITNESSES: usize = 175;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
 const H: u32 = 256;
@@ -4271,6 +4271,129 @@ fn pixels_inner(
              not an opaque fill, so the world stays legible behind the screen"
         ),
     );
+
+    // gs2b — the wash blends in GAMMA space, as vanilla's does.
+    //
+    // `fillGradient(0xC0101010, 0xD0101010)` over a stored byte `p` is
+    // `p * (1 - a) + 0x10 * a` with the alpha running `0xC0..0xD0` down the
+    // screen. The attachment blends in linear light, which leaves a bright
+    // pixel about twice as bright. The probe is the brightest hotbar pixel the
+    // wash reaches (the sky is black here, so it cannot tell the spaces
+    // apart), below the panel so the panel does not cover it.
+    {
+        let (bx, by, bw, bh) = (40u32, 236u32, 170u32, 8u32);
+        let mut probe = (bx, by, 0u8);
+        for yy in by..by + bh {
+            for xx in bx..bx + bw {
+                let i = ((yy * W + xx) * 4) as usize;
+                if open[i] != world_only[i] && world_only[i] > probe.2 {
+                    probe = (xx, yy, world_only[i]);
+                }
+            }
+        }
+        let i = ((probe.1 * W + probe.0) * 4) as usize;
+        let got = open[i] as f32;
+        let t = (probe.1 as f32 + 0.5) / H as f32;
+        let a = (192.0 + 16.0 * t) / 255.0;
+        let p = probe.2 as f32;
+        let gamma_pred = p * (1.0 - a) + 16.0 * a;
+        let lin = |b: f32| {
+            let s = b / 255.0;
+            if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let enc = |l: f32| {
+            let s = if l <= 0.003_130_8 {
+                l * 12.92
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            };
+            s * 255.0
+        };
+        let linear_pred = enc(lin(p) * (1.0 - a) + lin(16.0) * a);
+        c.record(
+            "gs2b.the_backdrop_blends_in_gamma_space",
+            probe.2 > 100 && (got - gamma_pred).abs() <= 2.5 && (got - linear_pred).abs() > 15.0,
+            format!(
+                "({},{}) went {} -> {got}; gamma-space prediction {gamma_pred:.1} (alpha \
+                 {a:.3}), linear-light {linear_pred:.1}. Vanilla blends the wash in the \
+                 encoded bytes; the sRGB attachment alone blends in linear light",
+                probe.0, probe.1, probe.2
+            ),
+        );
+    }
+
+    // gs2c — the hotbar's icons draw UNDER an open screen, dimmed by its wash.
+    //
+    // One item left of the panel (x 4..36, clear of it), as the item pass's
+    // under set and then as its screen set. Both draw something; the under
+    // one sits beneath the wash, so it is strictly darker than the same item
+    // drawn after it; and the item is where it was placed and nowhere else.
+    {
+        let held_all = crate::live_cmd::to_gpu_held_items(&baked.held_items);
+        let names = vec!["minecraft:white_concrete".to_string()];
+        let wanted = crate::live_cmd::gui_atlas_wanted(&held_all, &names);
+        let datlas = crate::live_cmd::pack_gui_atlas(&held_all, &wanted);
+        wr.init_gui_items(gpu, &datlas.rgba, 512, 512)?;
+        let item = [GuiItem {
+            model: "minecraft:white_concrete".into(),
+            x: 4.0,
+            y: 100.0,
+            size: 32.0,
+            glint: false,
+        }];
+        let lights = ItemLights::default();
+        let v = build_vertices(&held_all, &item, &lights, &|t| datlas.uv.get(&t).copied());
+        let split = |gpu: &mut Gpu,
+                     off: &mut Offscreen,
+                     wr: &mut WorldRenderer,
+                     under: &[rewo_gpu::gui_item::GuiItemVertex],
+                     screen: &[rewo_gpu::gui_item::GuiItemVertex]|
+         -> Result<Vec<u8>, String> {
+            wr.set_gui_items_split(gpu, under, screen, &[], &[])?;
+            off.render(gpu, Some((&mut *wr, vp)), draw, CLEAR)?;
+            off.read_rgba(gpu)
+        };
+        wr.set_container(true, None);
+        let none = split(gpu, off, wr, &[], &[])?;
+        let under = split(gpu, off, wr, &v, &[])?;
+        let screen = split(gpu, off, wr, &[], &v)?;
+        let lum = |img: &[u8]| -> i64 {
+            let mut s = 0i64;
+            for yy in 100..132u32 {
+                for xx in 4..36u32 {
+                    let i = ((yy * W + xx) * 4) as usize;
+                    s += img[i] as i64 + img[i + 1] as i64 + img[i + 2] as i64;
+                }
+            }
+            s
+        };
+        let (n_under, n_screen) = (
+            changed(&under, &none, 4, 100, 32, 32),
+            changed(&screen, &none, 4, 100, 32, 32),
+        );
+        let outside = changed(&under, &none, 40, 0, 216, 96);
+        c.record(
+            "gs2c.the_hotbars_icons_draw_under_the_screens_wash",
+            n_under > 300 && n_screen > 300 && lum(&under) * 2 < lum(&screen) && outside == 0,
+            format!(
+                "the under set changed {n_under} px and the screen set {n_screen} of the item's \
+                 32x32; summed channels {} under the wash against {} drawn after it and {} \
+                 with neither; {outside} px changed away from the item. Vanilla draws the HUD \
+                 and the screen's background over it, so the hotbar stays visible and dim; \
+                 one pass holding either set loses the hotbar's icons as soon as a screen opens",
+                lum(&under),
+                lum(&screen),
+                lum(&none)
+            ),
+        );
+        wr.set_gui_items_split(gpu, &[], &[], &[], &[])?;
+        wr.set_container(false, None);
+        wr.init_gui_items(gpu, &atlas.rgba, 512, 512)?;
+    }
 
     // The highlight lands on the hovered slot, four pixels out on every side.
     let changed_box = changed_bounds(&hovering, &open);

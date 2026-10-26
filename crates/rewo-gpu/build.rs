@@ -74,11 +74,20 @@ fn main() {
     .map(|(src, dst)| (src, dst, None))
     // M306 — `ENTITY_TRANSLUCENT`: the entity shader again, its cutout at
     // vanilla's 0.1 and its colour encoded for the gamma-space blend.
-    .chain([(
-        "shaders/entity.frag",
-        "entity_translucent.frag.spv",
-        Some("-DGAMMA_OUT"),
-    )]) {
+    .chain([
+        (
+            "shaders/entity.frag",
+            "entity_translucent.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
+        // The screen backdrop: `container.frag` again, its colour encoded for
+        // a blend in the UNORM view (vanilla blends GUI fills in gamma space).
+        (
+            "shaders/container.frag",
+            "container_gamma.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
+    ]) {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");
         let output = Command::new(&glslc)

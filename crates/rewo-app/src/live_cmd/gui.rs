@@ -1173,6 +1173,10 @@ pub struct GuiItemState {
     /// M275 — player-head skins that have arrived, `textures` value → the
     /// item model wearing it.
     pub(crate) skinned: std::collections::HashMap<String, String>,
+    /// The hotbar's icons to draw BENEATH the open screen's dim wash, which
+    /// the frame sets before `apply_screen` and `apply_gui_icons` takes (so a
+    /// frame that sets none draws none, whatever the previous one did).
+    pub(super) under: Vec<rewo_gpu::gui_item::GuiItem>,
 }
 
 impl GuiItemState {
@@ -1185,23 +1189,28 @@ impl GuiItemState {
             started: std::time::Instant::now(),
             glint: baked.glint.as_ref().map(|i| (i.rgba.clone(), i.w, i.h)),
             skinned: std::collections::HashMap::new(),
+            under: Vec::new(),
         }
     }
 }
 
-/// Place, shade and upload this frame's hotbar icons.
-///
-/// Rebuilds the atlas only when the hotbar needs a texture it does not hold —
-/// switching between two swords you already carry costs one vertex upload.
-pub(super) fn apply_hotbar_icons(
-    wr: &mut WorldRenderer,
-    gpu: &mut Gpu,
+/// The hotbar's icons as placed rects, and the stacks they hold.
+pub(super) struct HotbarIcons {
+    pub icons: Vec<rewo_gpu::gui_item::GuiItem>,
+    /// The nine stacks and the off-hand's, each with the rect its icon was
+    /// placed from: what the counts and the durability bars are measured on.
+    pub stacks: Vec<(Option<rewo_world::inventory::ItemSlot>, (f32, f32, f32))>,
+}
+
+/// `extractItemHotbar`: the nine slots' icons and the off-hand's, placed from
+/// the HUD's own rects. One builder for the hotbar on the HUD and the hotbar
+/// under an open screen.
+pub(super) fn hotbar_icons(
     session: &PlaySession,
     items: &rewo_data::items::Items,
-    state: &mut GuiItemState,
+    state: &GuiItemState,
     extent: (f32, f32),
-) -> Vec<rewo_gpu::world::OwnedTextLine> {
-    let held = &state.held;
+) -> HotbarIcons {
     let names = hotbar_models(
         &session.inventory,
         items,
@@ -1220,19 +1229,99 @@ pub(super) fn apply_hotbar_icons(
             &state.skinned,
         )
     });
-    let models: Vec<String> = names
+    let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, extent.0, extent.1);
+    let mut icons: Vec<rewo_gpu::gui_item::GuiItem> = names
         .iter()
-        .flatten()
-        .chain(offhand_name.iter())
-        .map(|n| n.to_string())
+        .enumerate()
+        .filter_map(|(i, n)| {
+            n.as_ref().map(|name| rewo_gpu::gui_item::GuiItem {
+                model: name.clone(),
+                x: slots[i].0,
+                y: slots[i].1,
+                size: slots[i].2,
+                glint: session.inventory.hotbar(i).is_some_and(|s| s.enchanted),
+            })
+        })
         .collect();
-    let wanted = gui_atlas_wanted(held, &models);
+    let pocket = rewo_gpu::hud::offhand_slot_rect(extent.0, extent.1, OFFHAND_LEFT);
+    if let (Some(model), Some(stack)) = (offhand_name, offhand) {
+        icons.push(rewo_gpu::gui_item::GuiItem {
+            model,
+            x: pocket.0,
+            y: pocket.1,
+            size: pocket.2,
+            glint: stack.enchanted,
+        });
+    }
+    let mut stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
+        .map(|i| (session.inventory.hotbar(i), slots[i]))
+        .collect();
+    stacks.push((offhand, pocket));
+    HotbarIcons { icons, stacks }
+}
+
+/// What `Screen.renderTransparentBackground` leaves of an sRGB colour at
+/// screen height `y` of `h`: `fillGradient(0xC0101010, 0xD0101010)` blended
+/// over it in gamma space, per channel `c * (1 - a) + 0x10/255 * a` with `a`
+/// running from `0xC0/255` at the top to `0xD0/255` at the bottom.
+pub(super) fn under_backdrop(srgb: [f32; 3], y: f32, h: f32) -> [f32; 3] {
+    let t = (y / h.max(1.0)).clamp(0.0, 1.0);
+    let a = (192.0 + 16.0 * t) / 255.0;
+    srgb.map(|c| c * (1.0 - a) + (16.0 / 255.0) * a)
+}
+
+/// The hotbar's count labels as they read under the dim wash. The text pass
+/// is drawn last of all, over the wash, so a label that should sit beneath it
+/// is handed the colour the wash would have left (and its shadow follows from
+/// that, close to vanilla's dimmed shadow).
+pub(super) fn dimmed_hotbar_labels(
+    mut labels: Vec<rewo_gpu::world::OwnedTextLine>,
+    h: f32,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    for l in &mut labels {
+        let srgb = l.color_linear.map(linear_to_srgb_channel);
+        l.color_linear = under_backdrop(srgb, l.y, h).map(srgb_to_linear_channel);
+    }
+    labels
+}
+
+fn srgb_to_linear_channel(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb_channel(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Place, shade and upload this frame's hotbar icons.
+///
+/// Rebuilds the atlas only when the hotbar needs a texture it does not hold —
+/// switching between two swords you already carry costs one vertex upload.
+pub(super) fn apply_hotbar_icons(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    session: &PlaySession,
+    items: &rewo_data::items::Items,
+    state: &mut GuiItemState,
+    extent: (f32, f32),
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    let hb = hotbar_icons(session, items, state, extent);
+    let models: Vec<String> = hb.icons.iter().map(|i| i.model.clone()).collect();
+    let wanted = gui_atlas_wanted(&state.held, &models);
 
     // Repack only when the hotbar needs a texture the resident atlas does not
     // hold. Switching between two swords you already carry costs one vertex
     // upload; packing every frame would rebuild a megabyte for nothing.
     if wanted != state.resident || !wr.gui_items_ready() {
-        let atlas = pack_gui_atlas(held, &wanted);
+        let atlas = pack_gui_atlas(&state.held, &wanted);
         if let Err(e) = wr.init_gui_items(gpu, &atlas.rgba, GUI_ATLAS_W, GUI_ATLAS_H) {
             log::warn!("live: gui-item atlas upload failed: {e}");
             return Vec::new();
@@ -1249,44 +1338,17 @@ pub(super) fn apply_hotbar_icons(
         state.uv = atlas.uv;
         state.resident = wanted;
     }
-    let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, extent.0, extent.1);
-    let mut gui: Vec<rewo_gpu::gui_item::GuiItem> = names
-        .iter()
-        .enumerate()
-        .filter_map(|(i, n)| {
-            n.as_ref().map(|name| rewo_gpu::gui_item::GuiItem {
-                model: name.clone(),
-                x: slots[i].0,
-                y: slots[i].1,
-                size: slots[i].2,
-                glint: session.inventory.hotbar(i).is_some_and(|s| s.enchanted),
-            })
-        })
-        .collect();
-    let pocket = rewo_gpu::hud::offhand_slot_rect(extent.0, extent.1, OFFHAND_LEFT);
-    if let (Some(model), Some(stack)) = (offhand_name, offhand) {
-        gui.push(rewo_gpu::gui_item::GuiItem {
-            model,
-            x: pocket.0,
-            y: pocket.1,
-            size: pocket.2,
-            glint: stack.enchanted,
-        });
-    }
-    upload_gui_icons(wr, gpu, state, &gui);
+    upload_gui_icons(wr, gpu, state, &hb.icons);
     // The nine hotbar stacks' durability bars, in the same rects the icons
     // were placed from, and the off-hand's.
-    let mut stacks: Vec<_> = (0..rewo_world::inventory::HOTBAR_SIZE)
-        .map(|i| (session.inventory.hotbar(i), slots[i]))
-        .collect();
-    stacks.push((offhand, pocket));
+    //
     // `!has(UNBREAKABLE)`. No item's *prototype* carries the component in
     // 26.2 — it is only ever patched on — so the patch flag is the whole
     // answer here.
-    wr.set_item_bars(item_bars(&stacks, items, |s| {
+    wr.set_item_bars(item_bars(&hb.stacks, items, |s| {
         session.inventory.text_of(s).is_some_and(|t| t.unbreakable)
     }));
-    hotbar_count_labels(&stacks, rewo_gpu::hud::gui_scale(extent.0, extent.1))
+    hotbar_count_labels(&hb.stacks, rewo_gpu::hud::gui_scale(extent.0, extent.1))
 }
 
 /// `itemDecorations`' count text for the hotbar's stacks (and the off-hand's),
@@ -1320,7 +1382,10 @@ pub(super) fn apply_gui_icons(
     state: &mut GuiItemState,
     icons: &[rewo_gpu::gui_item::GuiItem],
 ) {
-    let names: Vec<String> = icons.iter().map(|i| i.model.clone()).collect();
+    // The hotbar's icons beneath this screen, if the frame set any; taken so
+    // they cannot outlive the frame that set them.
+    let under = std::mem::take(&mut state.under);
+    let names: Vec<String> = under.iter().chain(icons).map(|i| i.model.clone()).collect();
     let wanted = gui_atlas_wanted(&state.held, &names);
     if wanted != state.resident || !wr.gui_items_ready() {
         let atlas = pack_gui_atlas(&state.held, &wanted);
@@ -1338,7 +1403,7 @@ pub(super) fn apply_gui_icons(
         state.uv = atlas.uv;
         state.resident = wanted;
     }
-    upload_gui_icons(wr, gpu, state, icons);
+    upload_gui_icon_sets(wr, gpu, state, &under, icons);
 }
 
 pub(super) fn upload_gui_icons(
@@ -1347,15 +1412,37 @@ pub(super) fn upload_gui_icons(
     state: &GuiItemState,
     icons: &[rewo_gpu::gui_item::GuiItem],
 ) {
-    let verts = rewo_gpu::gui_item::build_vertices(&state.held, icons, &state.lights, &|t| {
-        state.uv.get(&t).copied()
-    });
+    upload_gui_icon_sets(wr, gpu, state, &[], icons);
+}
+
+/// [`upload_gui_icons`] for two sets: the `under` set (the hotbar beneath an
+/// open screen) and the screen's own, one upload with two draw ranges.
+pub(super) fn upload_gui_icon_sets(
+    wr: &mut WorldRenderer,
+    gpu: &mut Gpu,
+    state: &GuiItemState,
+    under: &[rewo_gpu::gui_item::GuiItem],
+    icons: &[rewo_gpu::gui_item::GuiItem],
+) {
+    let build = |set: &[rewo_gpu::gui_item::GuiItem]| {
+        rewo_gpu::gui_item::build_vertices(&state.held, set, &state.lights, &|t| {
+            state.uv.get(&t).copied()
+        })
+    };
     // The glint's phase is wall-clock, not the game tick: vanilla reads
     // `Util.getMillis()` directly, so it keeps scrolling on a paused screen
     // and does not stutter with the tick rate (M43).
     let millis = state.started.elapsed().as_secs_f64() * 1000.0;
-    let glint = rewo_gpu::gui_item::build_glint_vertices(&state.held, icons, millis);
-    if let Err(e) = wr.set_gui_items_with_glint(gpu, &verts, &glint) {
+    let glint = |set: &[rewo_gpu::gui_item::GuiItem]| {
+        rewo_gpu::gui_item::build_glint_vertices(&state.held, set, millis)
+    };
+    if let Err(e) = wr.set_gui_items_split(
+        gpu,
+        &build(under),
+        &build(icons),
+        &glint(under),
+        &glint(icons),
+    ) {
         log::warn!("live: gui-item upload failed: {e}");
     }
 }
