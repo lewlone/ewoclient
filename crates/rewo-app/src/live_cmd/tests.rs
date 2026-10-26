@@ -4693,3 +4693,62 @@ fn a_sulfur_cubes_block_sits_in_its_middle() {
         assert!((edge - 0.5 * 0.999).abs() < 1e-4, "{baby}: edge {edge}");
     }
 }
+
+/// F1 (`Hud.isHidden`) hides every layer `Hud.extractRenderState` wraps in
+/// `if (!this.isHidden)`, plus the hand and the outline, and nothing else.
+#[test]
+fn f1_hides_the_hud_the_hand_and_the_outline() {
+    let shown = super::hud::HudLayers::of(false, false);
+    assert!(
+        shown.camera_overlays
+            && shown.hotbar_and_decorations
+            && shown.overlay_messages
+            && shown.chat_history
+            && shown.item_in_hand
+            && shown.block_outline
+    );
+    let hidden = super::hud::HudLayers::of(true, false);
+    assert!(
+        !hidden.camera_overlays
+            && !hidden.hotbar_and_decorations
+            && !hidden.overlay_messages
+            && !hidden.chat_history
+            && !hidden.item_in_hand
+            && !hidden.block_outline,
+        "{hidden:?}"
+    );
+}
+
+/// `ChatScreen.extractRenderState` draws the chat itself, so a focused chat
+/// keeps its history under F1 while the rest of the HUD stays hidden.
+#[test]
+fn a_focused_chat_keeps_its_history_under_f1() {
+    let layers = super::hud::HudLayers::of(true, true);
+    assert!(layers.chat_history);
+    assert!(!layers.hotbar_and_decorations && !layers.overlay_messages);
+}
+
+/// `itemCount`: a stack of one has no digit, any other count is white text
+/// bottom-right in its own slot, and an empty slot has none. The labels come
+/// from the rects the icons were placed from.
+#[test]
+fn the_hotbar_counts_sit_in_their_slots_and_skip_singles() {
+    use rewo_world::inventory::ItemSlot;
+    let scale = 3.0;
+    let slots = rewo_gpu::hud::hotbar_slot_rects(182.0, 22.0, 1280.0, 720.0);
+    let stacks = vec![
+        (Some(ItemSlot::plain(1, 32)), slots[0]),
+        (Some(ItemSlot::plain(1, 1)), slots[1]),
+        (None, slots[2]),
+        (Some(ItemSlot::plain(1, 5)), slots[3]),
+    ];
+    let labels = super::gui::hotbar_count_labels(&stacks, scale);
+    let texts: Vec<&str> = labels.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["32", "5"]);
+    // `x + 19 - 2 - width` with a 6 px digit, `y + 6 + 3`, in screen px.
+    let l = &labels[0];
+    assert_eq!(l.x, slots[0].0 + (17.0 - 11.0) * scale);
+    assert_eq!(l.y, slots[0].1 + 9.0 * scale);
+    assert!(l.shadow && l.color_linear == [1.0; 3]);
+    assert_eq!(labels[1].x, slots[3].0 + (17.0 - 5.0) * scale);
+}

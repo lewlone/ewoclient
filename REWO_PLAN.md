@@ -2180,6 +2180,7 @@ this shape once.
 | M399 (2026-10-21) — a crouching mannequin draws crouching | **r221** | — | — |
 | M400 (2026-10-21) — a swimming mannequin draws swimming | **r222** | — | — |
 | M401 (2026-10-21) — a sleeping mannequin draws lying down | **r223** | — | — |
+| HUD playtest parity (2026-10-26) — the off-hand pocket | — | HUD atlas y 224..248: `hotbar_offhand_left` (0,224), `_right` (30,224), 29x24; `ATLAS_H` 224 -> 256 | `hud::offhand_tests` (unit; no GPU gate yet) |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

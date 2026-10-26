@@ -164,6 +164,18 @@ pub fn apply_spawn_game_mode(
     );
 }
 
+/// [`PlaySession::local_game_mode`]'s choice: the mode the client was told
+/// (`localPlayerMode`) wins over the tab-list entry. The entry is keyed by a
+/// uuid that only matches the local player when the client's own uuid is the
+/// server's, so it is the unreliable half; a creative session that read it
+/// as absent drew the survival bars.
+pub fn resolve_local_game_mode(
+    told: Option<GameMode>,
+    listed: Option<GameMode>,
+) -> Option<GameMode> {
+    told.or(listed)
+}
+
 /// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
 /// `Entity.stringUUID` holds and therefore what a non-player entity's
 /// scoreboard membership is keyed by (M70).
@@ -4592,9 +4604,21 @@ impl PlaySession {
         self.gamemodes.get(&uuid).copied()
     }
 
-    /// The local player's game mode.
+    /// The local player's game mode **as the tab list holds it**
+    /// (`PlayerInfo.getGameMode()`). It needs [`Self::own_uuid`] to equal the
+    /// uuid the server lists the player under, which an offline-mode server
+    /// derives itself; use [`Self::local_game_mode`] for what
+    /// `MultiPlayerGameMode` believes.
     pub fn own_game_mode(&self) -> Option<GameMode> {
         self.own_uuid.and_then(|u| self.game_mode(u))
+    }
+
+    /// `MultiPlayerGameMode.getPlayerMode()`: the mode the login and respawn
+    /// packets and `game_event` 3 set, which is what `canHurtPlayer()`,
+    /// `hasExperience()` and the HUD gates read. The tab-list entry is only
+    /// the fallback for a session that was never told one.
+    pub fn local_game_mode(&self) -> Option<GameMode> {
+        resolve_local_game_mode(self.game_state.game_mode(), self.own_game_mode())
     }
 
     /// The local player's own attribute snapshots (M73).
