@@ -384,9 +384,10 @@ struct Push {
     _pad: [f32; 3],
 }
 
-/// One frame's clouds, ready to draw.
-pub struct CloudDraw {
-    pub faces: Vec<[i32; 3]>,
+/// One frame's clouds, ready to draw. M435 — the faces are borrowed (the
+/// caller's cached mesh; a 128-chunk deck is ~48k faces, not cloned per frame).
+pub struct CloudDraw<'a> {
+    pub faces: &'a [[i32; 3]],
     pub placement: CloudPlacement,
     /// The eye in world space — the fog fade measures from it, because the
     /// positions are world-space rather than vanilla's camera-relative.
@@ -399,6 +400,9 @@ pub struct CloudDraw {
 
 pub struct CloudPass {
     pipeline: vk::Pipeline,
+    /// M435 — the pipeline again against the UNORM twin, for the gamma-space
+    /// scope (`None` without one: the decoding pipeline draws).
+    gamma_pipeline: Option<vk::Pipeline>,
     layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
@@ -487,9 +491,24 @@ impl CloudPass {
                 )
                 .map_err(|e| format!("cloud layout: {e}"))?
         };
-        let pipeline = build_pipeline(&device, layout, color_format)?;
+        let pipeline = build_pipeline(
+            &device,
+            layout,
+            color_format,
+            include_bytes!(concat!(env!("OUT_DIR"), "/clouds.frag.spv")),
+        )?;
+        let gamma_pipeline = match crate::world::unorm_of(color_format) {
+            Some(unorm) => Some(build_pipeline(
+                &device,
+                layout,
+                unorm,
+                include_bytes!(concat!(env!("OUT_DIR"), "/clouds_gamma.frag.spv")),
+            )?),
+            None => None,
+        };
         Ok(Self {
             pipeline,
+            gamma_pipeline,
             layout,
             set_layout,
             pool,
@@ -499,6 +518,11 @@ impl CloudPass {
             quad_count: 0,
             fog_clouds_end: 0.0,
         })
+    }
+
+    /// M435 — whether the gamma-space pipeline exists.
+    pub fn has_gamma(&self) -> bool {
+        self.gamma_pipeline.is_some()
     }
 
     /// M425 — `FogCloudsEnd` alone, over the frame's mesh (a fog
@@ -527,16 +551,11 @@ impl CloudPass {
         let argb = draw.color_argb as u32;
         let ch = |shift: u32| ((argb >> shift) & 0xFF) as f32 / 255.0;
         // `ARGB.vector4fFromARGB32` — the colour reaches the shader as a plain
-        // multiplier. It is linearized for the same reason `end_sky` linearizes
-        // its constant: the attachment re-encodes on store, so a gamma-space
-        // multiply has to be applied in linear to come back out proportional.
+        // multiplier, vanilla's encoded number (M435: until then linearised,
+        // so the face shades multiplied linear light and a 0.7 face acted as
+        // 0.85); `clouds.frag` decodes it when it cannot blend encoded.
         let info = CloudInfo {
-            color: [
-                srgb_to_linear(ch(16)),
-                srgb_to_linear(ch(8)),
-                srgb_to_linear(ch(0)),
-                ch(24),
-            ],
+            color: [ch(16), ch(8), ch(0), ch(24)],
             offset: [
                 draw.placement.offset[0],
                 draw.placement.offset[1],
@@ -593,16 +612,23 @@ impl CloudPass {
         Ok(())
     }
 
+    /// M435 — `gamma` draws with the gamma-space pipeline, inside the
+    /// caller's UNORM scope.
     pub fn draw(
         &self,
         gpu: &Gpu,
         cb: vk::CommandBuffer,
         view_proj: [[f32; 4]; 4],
         extent: vk::Extent2D,
+        gamma: bool,
     ) {
         if self.quad_count == 0 {
             return;
         }
+        let pipeline = match self.gamma_pipeline {
+            Some(p) if gamma => p,
+            _ => self.pipeline,
+        };
         // Claim both slots, so the ring knows this frame reads them.
         let (Some(_), Some(_)) = (self.ubo.bind(), self.faces.bind()) else {
             return;
@@ -610,7 +636,7 @@ impl CloudPass {
         let set = self.sets[self.ubo.cursor()];
         let device = &gpu.device;
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             let viewport = vk::Viewport::default()
                 .y(extent.height as f32)
                 .width(extent.width as f32)
@@ -653,6 +679,9 @@ impl CloudPass {
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
+            if let Some(p) = self.gamma_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -660,28 +689,18 @@ impl CloudPass {
     }
 }
 
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.040_449_936 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    frag_spv: &[u8],
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
             device,
             include_bytes!(concat!(env!("OUT_DIR"), "/clouds.vert.spv")),
         )?;
-        let frag = crate::overlay::create_shader(
-            device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/clouds.frag.spv")),
-        )?;
+        let frag = crate::overlay::create_shader(device, frag_spv)?;
         let entry = c"main";
         let stages = [
             vk::PipelineShaderStageCreateInfo::default()

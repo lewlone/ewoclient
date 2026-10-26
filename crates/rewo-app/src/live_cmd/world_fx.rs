@@ -12,8 +12,9 @@ pub struct WeatherAssets {
     /// builds them once per JVM.
     pub(super) noise: rewo_world::weather::ClimateNoise,
     pub(super) directions: rewo_gpu::weather::ColumnDirections,
-    /// The cached mesh and the state it was built for.
-    pub(super) cached: Option<(Vec<[i32; 3]>, i32, i32, rewo_gpu::clouds::RelativeCameraPos)>,
+    /// The cached mesh and the state it was built for (M435: the cloud
+    /// options too, so changing them rebuilds it).
+    pub(super) cached: Option<(Vec<[i32; 3]>, CloudMeshKey)>,
     /// The eased rain-fog multiplier — state, because it ramps over ~5 ticks
     /// rather than following the rain level directly.
     pub(super) rain_fog: rewo_world::weather::RainFog,
@@ -41,9 +42,46 @@ impl WeatherAssets {
 /// `weatherRadius`, vanilla's video option. Must stay ≤ 16: the 32×32 direction
 /// table cannot address a column further out than that.
 pub(super) const WEATHER_RADIUS: i32 = 10;
-/// `cloudRange` — vanilla derives it from the render distance; Rewo pins it
-/// rather than plumbing a video-options struct for one number.
-pub(super) const CLOUD_RANGE_CHUNKS: i32 = 12;
+/// What a cached cloud mesh was built for: the centre cell, the camera's
+/// place against the deck, the status and the range (radius in cells).
+pub(super) type CloudMeshKey = (
+    i32,
+    i32,
+    rewo_gpu::clouds::RelativeCameraPos,
+    rewo_gpu::clouds::CloudStatus,
+    i32,
+);
+
+/// M435 — the cloud options as the frame uses them: `renderClouds` (`None`
+/// is off: `LevelRenderer` adds no cloud pass) and `cloudRange` in chunks.
+/// Until M435 Rewo ignored both and drew a fancy 12-chunk deck.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CloudSettings {
+    pub(super) status: Option<rewo_gpu::clouds::CloudStatus>,
+    pub(super) range: i32,
+}
+
+pub(super) fn cloud_settings(o: &rewo_net::options::Options) -> CloudSettings {
+    use rewo_net::options::CloudOption;
+    CloudSettings {
+        status: match o.clouds {
+            CloudOption::Off => None,
+            CloudOption::Fast => Some(rewo_gpu::clouds::CloudStatus::Fast),
+            CloudOption::Fancy => Some(rewo_gpu::clouds::CloudStatus::Fancy),
+        },
+        range: o.cloud_range,
+    }
+}
+
+/// `EnvironmentAttributes.CLOUD_FOG_END_DISTANCE`'s default (2048); neither
+/// built-in dimension overrides it.
+const CLOUD_FOG_END_DISTANCE: f32 = 2048.0;
+
+/// M435 — `AtmosphericFogEnvironment.setupFog`'s `fog.cloudEnd`:
+/// `min(cloudRange · 16, CLOUD_FOG_END_DISTANCE)`.
+pub(super) fn cloud_fog_end(range_chunks: i32) -> f32 {
+    ((range_chunks * 16) as f32).min(CLOUD_FOG_END_DISTANCE)
+}
 /// `EnvironmentAttributes.FOG_START_DISTANCE` / `FOG_END_DISTANCE` defaults.
 ///
 /// The rain offsets are applied to *these*, not to Rewo's own fog band. The two
@@ -57,16 +95,6 @@ pub(super) const CLOUD_RANGE_CHUNKS: i32 = 12;
 /// real values; reading them per-dimension is a small follow-up.
 pub(super) const ENV_FOG_START: f32 = 0.0;
 pub(super) const ENV_FOG_END: f32 = 1024.0;
-
-/// `FogCloudsEnd`, the distance at which the deck has faded out completely.
-///
-/// **An approximation, not a transcription.** Vanilla's comes from
-/// `FogRenderer`, which Rewo does not have. It must comfortably exceed the
-/// mesh's own reach or the deck is culled by its own fade — the furthest cell
-/// is ~192 blocks out horizontally, and the deck can sit a couple of hundred
-/// blocks overhead as well (192.33 above a y=-60 flat world is 250-odd). Set
-/// too tight, clouds simply never appear; the first live shot did exactly that.
-pub(super) const CLOUD_FOG_END: f32 = 1024.0;
 
 /// Build the two passes. Clouds need no texture (the shader carries its six
 /// face colours inline); rain and snow need both of theirs, and a missing one
@@ -254,7 +282,7 @@ pub(super) fn apply_fog_environment(
         wr.set_env_fog([env.start, env.end]);
         wr.set_sky_end(env.sky_end);
         // M425 — and the clouds' fade (under water the deck is gone past the
-        // water's band). The atmospheric `cloudEnd` stays [`CLOUD_FOG_END`].
+        // water's band). The atmospheric `cloudEnd` stays [`cloud_fog_end`]'s.
         wr.set_cloud_fog_end(env.cloud_end);
     }
     // M434 — the finished colour into the fog's own slot (the environment's
@@ -305,13 +333,15 @@ pub(super) fn apply_border(
     gpu: &mut Gpu,
     session: &PlaySession,
     partial_ticks: f32,
+    // M435 — `cloudRange`, which `depthFar` takes.
+    cloud_range: i32,
 ) {
     if !wr.border_ready() {
         return;
     }
     let eye = eye_f64(session);
     let render_distance = (session.effective_render_distance() * 16) as f64;
-    let depth_far = (render_distance as f32 * 4.0).max((CLOUD_RANGE_CHUNKS * 16) as f32);
+    let depth_far = (render_distance as f32 * 4.0).max((cloud_range * 16) as f32);
     let extracted = session
         .border
         .extract(partial_ticks, eye[0], eye[2], render_distance)
@@ -655,6 +685,8 @@ pub(super) fn apply_weather(
     // immediately" — the headless path draws a single frame after settling,
     // where an eased multiplier would still be near zero.
     _delta_ticks: Option<f32>,
+    // M435 — `renderClouds` and `cloudRange`.
+    clouds: CloudSettings,
 ) {
     let eye = eye_f64(session);
     let game_time = session.game_time();
@@ -675,8 +707,9 @@ pub(super) fn apply_weather(
     // `ARGB.alpha(cloudColor) > 0` is vanilla's whole test — no dimension name
     // is consulted, and neither is one here.
     let cloud_alpha = ((color as u32) >> 24) & 0xFF;
-    match (&w.clouds, cloud_alpha > 0) {
-        (Some(tex), true) => {
+    // `LevelRenderer`: `cloudStatus != OFF && ARGB.alpha(cloudColor) > 0`.
+    match (&w.clouds, clouds.status, cloud_alpha > 0) {
+        (Some(tex), Some(status), true) => {
             let placement = rewo_gpu::clouds::placement(
                 eye,
                 height,
@@ -685,26 +718,33 @@ pub(super) fn apply_weather(
                 tex.width,
                 tex.height,
             );
-            let key = (placement.cell_x, placement.cell_z, placement.relative_pos);
-            let stale = !matches!(&w.cached, Some((_, cx, cz, rp)) if (*cx, *cz, *rp) == key);
+            let radius = rewo_gpu::clouds::radius_cells(clouds.range);
+            let key = (
+                placement.cell_x,
+                placement.cell_z,
+                placement.relative_pos,
+                status,
+                radius,
+            );
+            let stale = !matches!(&w.cached, Some((_, k)) if *k == key);
             if stale {
                 let faces = tex.build_mesh(
                     placement.relative_pos,
                     placement.cell_x,
                     placement.cell_z,
-                    rewo_gpu::clouds::CloudStatus::Fancy,
-                    rewo_gpu::clouds::radius_cells(CLOUD_RANGE_CHUNKS),
+                    status,
+                    radius,
                 );
-                w.cached = Some((faces, key.0, key.1, key.2));
+                w.cached = Some((faces, key));
             }
-            let faces = w.cached.as_ref().map(|c| c.0.clone()).unwrap_or_default();
+            let faces = w.cached.as_ref().map_or(&[][..], |c| &c.0[..]);
             if let Err(e) = wr.set_clouds(
                 gpu,
                 &rewo_gpu::clouds::CloudDraw {
                     faces,
                     placement,
                     color_argb: color,
-                    fog_clouds_end: CLOUD_FOG_END,
+                    fog_clouds_end: cloud_fog_end(clouds.range),
                     camera: [eye[0] as f32, eye[1] as f32, eye[2] as f32],
                 },
             ) {
@@ -717,7 +757,7 @@ pub(super) fn apply_weather(
             let _ = wr.set_clouds(
                 gpu,
                 &rewo_gpu::clouds::CloudDraw {
-                    faces: Vec::new(),
+                    faces: &[],
                     placement: rewo_gpu::clouds::placement(eye, height, game_time, 0.0, 1, 1),
                     color_argb: 0,
                     fog_clouds_end: 1.0,

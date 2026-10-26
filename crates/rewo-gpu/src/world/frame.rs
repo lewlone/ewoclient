@@ -109,8 +109,15 @@ impl WorldRenderer {
         // Clouds (M33) sit between the solids and the translucent pass: they
         // are translucent themselves and must blend over terrain, but they are
         // also depth-writing, so water in front of them still sorts correctly.
+        // M435 — in vanilla's space when the frame has a UNORM twin.
         if let Some(pass) = &self.clouds {
-            pass.draw(gpu, cb, view_proj, extent);
+            if self.gamma.is_some() && pass.has_gamma() {
+                self.in_gamma_space(gpu, cb, extent, || {
+                    pass.draw(gpu, cb, view_proj, extent, true)
+                });
+            } else {
+                pass.draw(gpu, cb, view_proj, extent, false);
+            }
         }
         self.draw_translucent(gpu, cb, view_proj, extent);
         // Particles (M37) sit with the other blended, depth-tested,

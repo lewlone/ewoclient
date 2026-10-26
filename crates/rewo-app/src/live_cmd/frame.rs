@@ -3373,6 +3373,8 @@ impl LiveApp {
             if let Some(c) = self.check.as_mut() {
                 c.weather_frames += 1;
             }
+            // M435 — the cloud options, read before the weather's borrow.
+            let clouds = cloud_settings(&self.options);
             let w = self
                 .weather
                 .get_or_insert_with(|| WeatherAssets::new(baked));
@@ -3384,8 +3386,15 @@ impl LiveApp {
                 alpha,
                 // 20 ticks per second — .
                 Some(dt * 20.0),
+                clouds,
             );
-            apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
+            apply_border(
+                &mut state.world_renderer,
+                &mut state.gpu,
+                session,
+                alpha,
+                clouds.range,
+            );
             apply_render_distance_fog(&mut state.world_renderer, session);
             // M422 — under water, in lava or powder snow, blinded: the fog
             // environment over the atmospheric fog.

@@ -87,7 +87,30 @@ pub struct Options {
     pub model_parts: u8,
     /// `options.allowServerListing` (M206), default ON. Read-only.
     pub allow_server_listing: bool,
+    /// M435 — `options.renderClouds` (`CloudStatus`: `"true"` fancy, `"fast"`,
+    /// `"false"` off; a bare boolean is the legacy alternative), default
+    /// fancy. Read-only.
+    pub clouds: CloudOption,
+    /// M435 — `options.renderCloudsDistance`, in chunks: `IntRange(2, 128)`,
+    /// default 128. It sizes the deck and its fog end. Read-only.
+    pub cloud_range: i32,
 }
+
+/// M435 — `CloudStatus`, the `renderClouds` option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloudOption {
+    Off,
+    Fast,
+    Fancy,
+}
+
+/// `options.renderClouds`' and `options.renderCloudsDistance`'s keys, and the
+/// latter's range (`IntRange(2, 128)`, default 128).
+pub const KEY_RENDER_CLOUDS: &str = "renderClouds";
+pub const KEY_CLOUD_RANGE: &str = "cloudRange";
+pub const CLOUD_RANGE_MIN: i32 = 2;
+pub const CLOUD_RANGE_MAX: i32 = 128;
+pub const CLOUD_RANGE_DEFAULT: i32 = 128;
 
 /// `options.renderDistance`'s key and range (`IntRange(2, 32)`, default 12).
 pub const KEY_RENDER_DISTANCE: &str = "renderDistance";
@@ -130,6 +153,9 @@ impl Default for Options {
             model_parts: 0x7f,
             // `createBoolean("options.allowServerListing", .., true, ..)`.
             allow_server_listing: true,
+            // `CloudStatus.FANCY` and `128` (`Options.java`'s declarations).
+            clouds: CloudOption::Fancy,
+            cloud_range: CLOUD_RANGE_DEFAULT,
         }
     }
 }
@@ -281,6 +307,30 @@ impl Options {
             },
             // `IntRange.codec()` is `Codec.intRange(2, 32)`: a value outside
             // FAILS the parse (logged, the default stands), not clamped.
+            // `CloudStatus.CODEC` (a quoted serialized name) or the legacy
+            // `BOOL` alternative (`b ? FANCY : OFF`).
+            KEY_RENDER_CLOUDS => match raw.trim().trim_matches('"') {
+                "true" => {
+                    self.clouds = CloudOption::Fancy;
+                    true
+                }
+                "fast" => {
+                    self.clouds = CloudOption::Fast;
+                    true
+                }
+                "false" => {
+                    self.clouds = CloudOption::Off;
+                    true
+                }
+                _ => false,
+            },
+            KEY_CLOUD_RANGE => match raw.trim().parse::<i32>() {
+                Ok(v) if (CLOUD_RANGE_MIN..=CLOUD_RANGE_MAX).contains(&v) => {
+                    self.cloud_range = v;
+                    true
+                }
+                _ => false,
+            },
             KEY_RENDER_DISTANCE => match raw.trim().parse::<i32>() {
                 Ok(v) if (RENDER_DISTANCE_MIN..=RENDER_DISTANCE_MAX).contains(&v) => {
                     self.render_distance = v;
@@ -891,5 +941,33 @@ mod tests {
         assert_eq!(o.music_frequency, MusicFrequency::Constant);
         o.cycle_frequency();
         assert_eq!(o.music_frequency, MusicFrequency::Default, "and wraps");
+    }
+
+    /// M435 — `renderClouds` reads the codec's quoted names and the legacy
+    /// booleans; `cloudRange` its `IntRange(2, 128)`, anything else the
+    /// default.
+    #[test]
+    fn the_cloud_options_parse_as_vanillas_codecs() {
+        let o = Options::default();
+        assert_eq!((o.clouds, o.cloud_range), (CloudOption::Fancy, 128));
+        for (line, want) in [
+            ("renderClouds:\"false\"", CloudOption::Off),
+            ("renderClouds:\"fast\"", CloudOption::Fast),
+            ("renderClouds:\"true\"", CloudOption::Fancy),
+            ("renderClouds:false", CloudOption::Off),
+            ("renderClouds:true", CloudOption::Fancy),
+            ("renderClouds:\"fancy\"", CloudOption::Fancy),
+        ] {
+            assert_eq!(Options::parse(line).clouds, want, "{line}");
+        }
+        for (line, want) in [
+            ("cloudRange:2", 2),
+            ("cloudRange:128", 128),
+            ("cloudRange:12", 12),
+            ("cloudRange:1", 128),
+            ("cloudRange:129", 128),
+        ] {
+            assert_eq!(Options::parse(line).cloud_range, want, "{line}");
+        }
     }
 }

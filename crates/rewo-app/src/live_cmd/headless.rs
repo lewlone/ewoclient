@@ -599,8 +599,15 @@ pub(super) fn run_headless(
         &mut weather_assets,
         1.0,
         None,
+        cloud_settings(&headless_options),
     );
-    apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
+    apply_border(
+        &mut world_renderer,
+        &mut gpu,
+        &session,
+        1.0,
+        cloud_settings(&headless_options).range,
+    );
     apply_render_distance_fog(&mut world_renderer, &session);
     // M422 — the fog environment, as the live frame applies it.
     let _ = apply_fog_environment(

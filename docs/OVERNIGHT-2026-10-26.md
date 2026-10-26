@@ -42,7 +42,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   Rewo's frame was 10-30% too bright, landed from `claude/rewo-srgb-terrain`),
   M433 (mobs, block entities and dropped items too, and dyed armour), M434
   (the sky: midnight was 6x too bright, noon's fog colour lacked vanilla's
-  lean toward the sky, the sun had no halo); the
+  lean toward the sky, the sun had no halo), M435 (clouds follow the
+  options: off is off, and the deck reaches vanilla's 128 chunks); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -149,6 +150,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `958f37ae` | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
 | `5c6277b7` | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
 | `17a590fb` | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
+| (next) | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
 
 ## A broken default build, fixed
 
@@ -211,7 +213,8 @@ major bumps, so the next weekly group arrives without it.
   lava, powder snow, blindness, darkness, water vision). Left: a live
   witness with the bot under water (M424: r230), the void darkness (M427),
   the boss bar's world darkening, the open air's cloud fade
-  (Rewo pins a 12-chunk deck where vanilla's range defaults to 128).
+  (Rewo pinned a 12-chunk deck where vanilla's range defaults to 128;
+  M435 reads `cloudRange`).
 - ~~Entities take no fog at all~~: done in M412; the first-person hand
   in M423; its glint in M430.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the

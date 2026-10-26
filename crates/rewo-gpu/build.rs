@@ -85,6 +85,12 @@ fn main() {
             "hand_glint.frag.spv",
             Some("-DHAND_FOG"),
         ),
+        // M435 — the clouds for the gamma-space scope.
+        (
+            "shaders/clouds.frag",
+            "clouds_gamma.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
         // M434 — the sun, moon and sunrise fan for the gamma-space scope.
         (
             "shaders/celestial.frag",

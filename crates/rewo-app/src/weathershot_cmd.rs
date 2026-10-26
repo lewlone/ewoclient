@@ -678,7 +678,7 @@ fn check_cloud_pixels(
         wr.set_clouds(
             gpu,
             &CloudDraw {
-                faces: faces.clone(),
+                faces: &faces,
                 placement,
                 color_argb: color,
                 fog_clouds_end: 512.0,
@@ -726,7 +726,7 @@ fn check_cloud_pixels(
         wr.set_clouds(
             gpu,
             &CloudDraw {
-                faces: tex.build_mesh(p.relative_pos, p.cell_x, p.cell_z, CloudStatus::Fancy, 8),
+                faces: &tex.build_mesh(p.relative_pos, p.cell_x, p.cell_z, CloudStatus::Fancy, 8),
                 placement: p,
                 color_argb: 0xCCFF_FFFFu32 as i32,
                 fog_clouds_end: 512.0,

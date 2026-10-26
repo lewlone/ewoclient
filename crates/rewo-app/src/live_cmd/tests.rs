@@ -4785,3 +4785,22 @@ fn the_cursor_draws_a_carried_stacks_own_copy() {
     );
     assert_eq!(icon(None).as_deref(), Some("minecraft:white_banner"));
 }
+
+/// M435 — the cloud options reach the frame: off is no pass at all, fast and
+/// fancy their statuses, and the deck's fog end is `min(range · 16, 2048)`.
+#[test]
+fn the_cloud_options_set_the_status_and_the_fog_end() {
+    use rewo_gpu::clouds::CloudStatus;
+    use rewo_net::options::Options;
+    let off = cloud_settings(&Options::parse("renderClouds:\"false\""));
+    assert_eq!(off.status, None);
+    let fast = cloud_settings(&Options::parse("renderClouds:\"fast\"\ncloudRange:12"));
+    assert_eq!((fast.status, fast.range), (Some(CloudStatus::Fast), 12));
+    let default = cloud_settings(&Options::default());
+    assert_eq!(
+        (default.status, default.range),
+        (Some(CloudStatus::Fancy), 128)
+    );
+    assert_eq!(cloud_fog_end(128), 2048.0);
+    assert_eq!(cloud_fog_end(12), 192.0);
+}
