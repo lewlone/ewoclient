@@ -20,7 +20,7 @@ setup:
     - gamemode survival @s
     - give @s minecraft:stone_axe
     - 'summon minecraft:cow 0.5 -60 2.0 {NoAI:1b,Health:12f,Rotation:[180f,0f]}'
-    - 'summon minecraft:zombie -1.0 -60 2.0 {NoAI:1b,Health:12f,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1}}}'
+    - 'summon minecraft:zombie -1.0 -60 2.0 {NoAI:1b,Health:12f,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1,components:{"minecraft:unbreakable":{}}}}}'
     - 'summon minecraft:pig 2.0 -60 2.0 {NoAI:1b,Health:12f,Age:-24000,Rotation:[180f,0f]}'
 
 client:

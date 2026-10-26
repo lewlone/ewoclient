@@ -1,6 +1,7 @@
 # Coverage beyond Enni's lists: mob models, textures, shadows and name tags. NoAI mobs at exact
-# spots under a frozen world, so both clients see the same poses. The undead wear helmets: in daylight
-# they catch fire at random in the ticks before the freeze, which would differ run to run.
+# spots under a frozen world, so both clients see the same poses. The undead wear UNBREAKABLE helmets:
+# in daylight a helmet takes the sun's damage instead of the mob burning (`isSunBurnTick`), and a
+# plain leather cap could break before the freeze and let the mob catch fire at random.
 name: rewo_mobs
 description: A row of NoAI mobs (cow, sheep, pig, chicken, zombie, skeleton, creeper, villager, wolf) and a named one.
 
@@ -16,8 +17,8 @@ setup:
     - 'summon minecraft:sheep -2.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f],Color:14b}'
     - 'summon minecraft:pig -0.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
     - 'summon minecraft:chicken 1.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
-    - 'summon minecraft:zombie 3.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1}}}'
-    - 'summon minecraft:skeleton -3.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1}}}'
+    - 'summon minecraft:zombie 3.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1,components:{"minecraft:unbreakable":{}}}}}'
+    - 'summon minecraft:skeleton -3.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1,components:{"minecraft:unbreakable":{}}}}}'
     - 'summon minecraft:creeper -1.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f]}'
     - 'summon minecraft:villager 0.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],VillagerData:{type:"minecraft:plains",profession:"minecraft:farmer",level:1}}'
     - 'summon minecraft:wolf 2.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],CustomName:"Rex",CustomNameVisible:1b}'

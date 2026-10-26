@@ -226,11 +226,11 @@ fn build_line_pipeline(
     unsafe {
         let vert = crate::overlay::create_shader(
             device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/line.vert.spv")),
+            include_bytes!(concat!(env!("OUT_DIR"), "/selection_line.vert.spv")),
         )?;
         let frag = crate::overlay::create_shader(
             device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/line.frag.spv")),
+            include_bytes!(concat!(env!("OUT_DIR"), "/selection_line.frag.spv")),
         )?;
         let entry = c"main";
         let stages = [

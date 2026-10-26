@@ -33,6 +33,8 @@ fn main() {
         ("shaders/locator.frag", "locator.frag.spv"),
         ("shaders/line.vert", "line.vert.spv"),
         ("shaders/line.frag", "line.frag.spv"),
+        ("shaders/selection_line.vert", "selection_line.vert.spv"),
+        ("shaders/selection_line.frag", "selection_line.frag.spv"),
         ("shaders/celestial.vert", "celestial.vert.spv"),
         ("shaders/celestial.frag", "celestial.frag.spv"),
         ("shaders/sunrise.vert", "sunrise.vert.spv"),
