@@ -152,7 +152,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `5c6277b7` | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
 | `17a590fb` | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
-| (next) | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
+| `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
 
 ## A broken default build, fixed
 
