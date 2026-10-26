@@ -96,6 +96,26 @@ variant are random on both sides).
 7. `options.renderClouds` is honoured (`"false"` drew clouds), and mounting shows vanilla's
    "Press Left Shift to Dismount" (`mount.onboard`) on the action bar.
 
+8. **HUD, round 2** (worker): the crosshair's attack-cooldown indicator
+   (`Player.attackStrengthTicker`, `Hud.extractCrosshair`), and the hand drawn under an open
+   screen as vanilla's is. "A giant copy of the block behind the container" was `/give`'s fake
+   item entity: spawned at eye height, never despawning under `/tick freeze`, drawn with no
+   face culling, so from inside it filled the view; a dropped block whose bounds contain the
+   camera now draws none of it. "The held block sits low" was the swing: Rewo's frame was 4
+   ticks after a place click and mid-swing, the pose math matches the decompile at rest.
+9. **World** (worker): sign boards and posts, hanging signs, shelves and dried ghasts (26.2
+   draws a sign's board as a block model with a 32x32 sprite, which the 16x16 terrain array
+   refused; the sprite is now cut into tiles), entity shadows (`ShadowFeatureRenderer`), and
+   villager outfits (`VillagerProfessionLayer`; the farmer's hat needed the layers to write
+   depth). `rewo_mobs`: every mob, shadows and the farmer's outfit match.
+10. **The crosshair inverts** what is behind it (`BlendFunction.INVERT`, in gamma space), and
+    **the block outline is vanilla's**: the state's outline shape, black at alpha 0.4,
+    `getAppropriateLineWidth()` pixels wide as screen-space quads, pulled toward the camera
+    (`VIEW_OFFSET_Z_LAYERING`). It was the unit cube as a 1 px line at alpha 0.7.
+
+Verified on db8177ea: cargo test 4732/0 (`REWO_REQUIRE_ASSETS=1`), gates.py 51/51, render check
+223 PASS / 0 FAIL with no validation message.
+
 ### Corrections to the findings
 
 - **"The furnace output slot is empty" was the harness, not Rewo.** The server smelts in real
@@ -165,20 +185,20 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 - **Fixed (phase B 4).** **F1** hides only the sidebar, the tab list and name labels. Vanilla's `Hud.isHidden` also hides
   the crosshair, hotbar and bars, effects, boss bar, action bar, title, chat, the hand
   (`renderItemInHand`) and the block outline.
-- No **attack-cooldown indicator**; no **"Press Left Shift to Dismount"** message when mounting.
-- The **crosshair** is plain white (vanilla's inverts what is behind it) and stays drawn over menus.
+- **Fixed (phase B 7, 8).** No **attack-cooldown indicator**; no **"Press Left Shift to Dismount"** message when mounting.
+- **Fixed (phase B 10; the HUD draws under screens since phase B 8).** The **crosshair** is plain white (vanilla's inverts what is behind it) and stays drawn over menus.
 
 ### World and entities
 
-- The **block outline** is a broken 1-pixel line; vanilla's is a solid line about 2 pixels wide.
+- **Fixed (phase B 10).** The **block outline** is a broken 1-pixel line; vanilla's is a solid line about 2 pixels wide.
 - **Moved to M422** (`claude/autonomous-run-1026`). **Underwater** there is no fog or tint: vanilla goes dark blue, Rewo stays bright
   (`rewo_drowning`). Water surfaces are pale grey-blue (partly the colour-space issue).
-- No **entity shadows** (`rewo_horse`, `rewo_mobs`).
-- A **standing sign** draws its text with no board or post (`rewo_blocks`).
-- The **farmer villager** has no profession outfit (`rewo_mobs`).
+- **Fixed (phase B 9).** No **entity shadows** (`rewo_horse`, `rewo_mobs`).
+- **Fixed (phase B 9).** A **standing sign** draws its text with no board or post (`rewo_blocks`).
+- **Fixed (phase B 9).** The **farmer villager** has no profession outfit (`rewo_mobs`).
 - A **map in an item frame** hangs about half a block lower than vanilla's (`rewo_maps`).
 - Grass block sides under water show a bright green fringe at the pond's edge (`rewo_boat`).
-- **Holding a block item:** the first-person block is mostly hidden behind the hotbar, and behind
+- **Explained and fixed (phase B 8).** **Holding a block item:** the first-person block is mostly hidden behind the hotbar, and behind
   an open container a giant copy of the block fills the view (`rewo_containers`, `rewo_audio_blocks`).
 - **Sky** (`rewo_sky_weather`): no sunrise or sunset glow and no dusk dimming; clouds are drawn
   although `options.txt` has `renderClouds:"false"` (**fixed, phase B 7**).
@@ -206,7 +226,7 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
   are missing, and the book lists 29 pages where vanilla's lists 11 (recipes not grouped into
   collections?).
 - The **carried stack** on the cursor seems not to be drawn in the stonecutter (Opus).
-- The held-item name ("Map") is drawn **on top of an open inventory**.
+- **Fixed (phase B 8: left out under a screen).** The held-item name ("Map") is drawn **on top of an open inventory**.
 - No **menu background blur**. The options screens draw no background at all, so the HUD and hand
   show through.
 - **Options:** Rewo's Options screen has three buttons where vanilla has the FOV slider, World
