@@ -4828,3 +4828,46 @@ fn a_merchants_title_carries_its_level_only_with_a_progress_bar() {
     assert_eq!(title(Some(&view(false))), "Chest");
     assert_eq!(title(None), "Chest");
 }
+
+// -- the stonecutter's recipe-button tooltip ----------------------------------
+
+/// Hovering a recipe button names its result, over the icon's own box
+/// (`posY = y + row * 18 + 2`), and only while the grid is displayed.
+#[test]
+fn a_stonecutter_button_tooltips_its_result() {
+    let recipes = rewo_data::stonecutter_table::select_by_input("minecraft:stone");
+    assert!(recipes.len() > 1, "stone cuts into several things");
+    let result = recipes[1].result;
+    let names: std::collections::HashMap<String, String> = recipes
+        .iter()
+        .map(|r| (r.result.to_string(), format!("name of {}", r.result)))
+        .collect();
+    let view = |display| CutView {
+        recipes: recipes.clone(),
+        start_index: 0,
+        selected: -1,
+        scroll_offs: 0.0,
+        display,
+    };
+    let tip = |cut: &CutView, panel: (f64, f64)| {
+        super::tooltips::cut_tooltip(
+            Some(cut),
+            panel,
+            &names,
+            &label_lang(),
+            rewo_gpu::tooltip::TooltipFlag::NORMAL,
+            &advances(),
+            None,
+            (500.0, 400.0),
+            (1280.0, 720.0),
+        )
+    };
+    // Cell 1 starts at (52 + 16, 14 + 2).
+    let hit = tip(&view(true), (68.0 + 3.0, 16.0 + 3.0)).expect("over cell 1");
+    assert_eq!(hit.1.len(), 1, "one line: the name");
+    assert_eq!(hit.1[0].text, format!("name of {result}"));
+    // The icon's box starts two pixels below the grid's top: y 14 is no cell.
+    assert!(tip(&view(true), (60.0, 14.0)).is_none());
+    // The grid is hidden when `displayRecipes` is false.
+    assert!(tip(&view(false), (71.0, 19.0)).is_none());
+}

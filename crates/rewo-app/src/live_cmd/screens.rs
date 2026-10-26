@@ -883,7 +883,9 @@ pub(super) fn apply_screen(
                 )
             },
             |glyphs| {
-                screen_tooltip(
+                // `StonecutterScreen.extractTooltip` runs `super`'s (the slot's)
+                // first and adds its recipe button's only if that set none.
+                let slot = screen_tooltip(
                     menu,
                     items,
                     &baked.item_names,
@@ -905,7 +907,20 @@ pub(super) fn apply_screen(
                         .is_some_and(|m| m.is_spectator()),
                     book_open,
                     &session.maps,
-                )
+                );
+                slot.or_else(|| {
+                    cut_tooltip(
+                        cut,
+                        panel_mouse,
+                        &baked.item_names,
+                        &baked.lang,
+                        flag,
+                        advance,
+                        glyphs.as_deref_mut(),
+                        mouse,
+                        (w, h),
+                    )
+                })
             },
             // The book's cell tooltip, SECOND. Vanilla calls it AFTER the
             // container's and it still loses — first-wins, not last-wins.
