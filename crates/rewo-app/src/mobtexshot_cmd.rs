@@ -26,7 +26,8 @@
 //!   pixel samples exactly one texel — there is no filtering blend to model;
 //! * the solid range's pipeline is `blend_enable(!solid)`, i.e. **off**, so an
 //!   entity pixel is written rather than mixed with the sky behind it;
-//! * `entity.frag` is `out = texel * v_color.rgb * v_light_hurt.rgb` and its
+//! * `entity.frag` is `out = texel * v_color.rgb * v_light_hurt.rgb` on
+//!   gamma-encoded numbers (M433, as vanilla's `entity.fsh`), and its
 //!   fog (M412) is pushed out of reach by every stage ([`stage_from`]; m120
 //!   alone sets a band), and this gate draws at `light = [1,1,1]`, so the
 //!   light factor is the identity;
@@ -36,7 +37,9 @@
 //!   everything about the draw except the constant.
 //!
 //! So for a neutral draw the whole render is
-//! `pixel = srgb_encode(srgb_decode(texel) * shade * tint)`, and the set of
+//! `pixel = round(texel * shade * tint)` on the encoded bytes (M433: until
+//! then `srgb_encode(srgb_decode(texel) * shade * tint)`, the linear model,
+//! which made every shade act as its 2.2th root), and the set of
 //! byte triples a given sheet can produce is finite and computable on the CPU
 //! from the jar's own decoded PNG bytes. A pixel outside that set did not come
 //! from that sheet. The one slack allowed is ±1 per channel, because the GPU's
@@ -445,15 +448,6 @@ fn run_gate(args: MobtexshotArgs) -> Result<(), String> {
 // The colour algebra
 // ---------------------------------------------------------------------------
 
-fn srgb_decode(b: u8) -> f32 {
-    let c = b as f32 / 255.0;
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 fn srgb_encode(c: f32) -> u8 {
     let c = c.clamp(0.0, 1.0);
     let s = if c <= 0.0031308 {
@@ -502,27 +496,25 @@ fn producible(rgba: &[u8]) -> HashSet<u32> {
     }
     let mut out = HashSet::with_capacity(texels.len() * SHADES.len() * TINTS.len());
     for t in texels {
-        let lin = [
-            srgb_decode((t >> 16) as u8),
-            srgb_decode((t >> 8) as u8),
-            srgb_decode(t as u8),
-        ];
         for s in SHADES {
             for tint in TINTS {
-                let f = [
-                    srgb_decode(tint[0]),
-                    srgb_decode(tint[1]),
-                    srgb_decode(tint[2]),
-                ];
                 out.insert(pack(
-                    srgb_encode(lin[0] * s * f[0]),
-                    srgb_encode(lin[1] * s * f[1]),
-                    srgb_encode(lin[2] * s * f[2]),
+                    gamma_product((t >> 16) as u8, s, tint[0]),
+                    gamma_product((t >> 8) as u8, s, tint[1]),
+                    gamma_product(t as u8, s, tint[2]),
                 ));
             }
         }
     }
     out
+}
+
+/// M433 — one channel of vanilla's `texture * vertexColor`: the texel byte
+/// times the shade times the tint byte, on the encoded numbers, rounded to
+/// the byte the attachment stores.
+fn gamma_product(texel: u8, shade: f32, tint: u8) -> u8 {
+    let g = texel as f32 / 255.0 * shade * (tint as f32 / 255.0);
+    (g.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8
 }
 
 /// The same product, kept in **linear** light and carrying each texel's own
@@ -541,21 +533,26 @@ fn producible_linear(rgba: &[u8]) -> Vec<([f32; 3], f32)> {
         }
     }
     let mut out = Vec::with_capacity(texels.len() * SHADES.len() * TINTS.len());
+    // M433 — the product runs on the encoded numbers (`gamma_product`'s,
+    // unrounded) and is decoded for the blend.
+    let decode = |c: f32| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
     for t in texels {
         let a = (t >> 24) as f32 / 255.0;
-        let lin = [
-            srgb_decode(((t >> 16) & 255) as u8),
-            srgb_decode(((t >> 8) & 255) as u8),
-            srgb_decode((t & 255) as u8),
+        let g = [
+            ((t >> 16) & 255) as f32 / 255.0,
+            ((t >> 8) & 255) as f32 / 255.0,
+            (t & 255) as f32 / 255.0,
         ];
         for s in SHADES {
             for tint in TINTS {
                 out.push((
-                    [
-                        lin[0] * s * srgb_decode(tint[0]),
-                        lin[1] * s * srgb_decode(tint[1]),
-                        lin[2] * s * srgb_decode(tint[2]),
-                    ],
+                    std::array::from_fn(|c| decode(g[c] * s * (tint[c] as f32 / 255.0))),
                     a,
                 ));
             }

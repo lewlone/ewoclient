@@ -2467,7 +2467,9 @@ fn check_fish(
     );
 
     // ---- and the colour is the DIFFUSE table, not the sheep's --------------
-    let lin = |v: u8| rewo_gpu::entities::srgb_to_linear(v as f32 / 255.0);
+    // M433 — vanilla multiplies the dye's bytes into the encoded texel, so
+    // the ratio is taken over the bytes (`lin` was the linear decode).
+    let lin = |v: u8| v as f32 / 255.0;
     let diffuse = rewo_gpu::mobs::DYE_DIFFUSE_COLORS;
     let wool = rewo_gpu::mobs::SHEEP_WOOL_COLORS;
     let mut fail = Vec::new();
@@ -2505,7 +2507,7 @@ fn check_fish(
         "f4.the_fish_dyes_are_getTextureDiffuseColor_not_the_sheeps_lerper",
         fail.is_empty() && wool_would_fail >= 40,
         format!(
-            "15 dyes x 3 channels against `linear(diffuse[k])/linear(diffuse[0])`, \
+            "15 dyes x 3 channels against the byte ratio `diffuse[k]/diffuse[0]`, \
              {} outside 8%{}. `TropicalFishRenderer.extractRenderState` calls \
              `getTextureDiffuseColor()` on both dyes with no `ColorLerper` in \
              sight, where the sheep's wool goes through \
@@ -2896,7 +2898,9 @@ fn run_tint_check(
         ),
     );
 
-    let lin = |c: u8| rewo_gpu::entities::srgb_to_linear(c as f32 / 255.0);
+    // M433 — vanilla multiplies the dye's bytes into the encoded texel, so
+    // the ratio is taken over the bytes (`lin` was the linear decode).
+    let lin = |c: u8| c as f32 / 255.0;
     let table = rewo_gpu::mobs::SHEEP_WOOL_COLORS;
     let mut ratio_fail = Vec::new();
     let mut stray_fail = Vec::new();
@@ -2943,7 +2947,7 @@ fn run_tint_check(
         "t3.every_dye_renders_vanillas_wool_colour_as_a_ratio",
         ratio_fail.is_empty(),
         format!(
-            "16 dyes x 3 channels against `linear(color[k])/linear(color[0])`, a \
+            "16 dyes x 3 channels against the byte ratio `color[k]/color[0]`, a \
              prediction from `SheepWoolLayer`'s semantics rather than from the \
              renderer; {} outside tolerance{}",
             ratio_fail.len(),
@@ -3112,7 +3116,7 @@ fn run_tint_check(
     for dye in 1..16u8 {
         let on = shot_ext(&mut wr, gpu, &mut off, Some(dye), true, false, None)?;
         let off_ref = shot_ext(&mut wr, gpu, &mut off, Some(dye), true, false, Some(false))?;
-        // linear(SHEEP_WOOL_COLORS[k]) — the layer colour itself, which is
+        // SHEEP_WOOL_COLORS[k] over 255 (M433: bytes) — the layer colour itself, which is
         // what the quotient below must equal.
         let want: [f32; 3] = std::array::from_fn(|c| lin(table[dye as usize][c]));
         let (mut sum, mut n) = ([0.0f64; 3], [0u32; 3]);
@@ -3142,7 +3146,7 @@ fn run_tint_check(
         format!(
             "`SheepWoolUndercoatLayer` passes `state.getWoolColor()`, the same \
              call `SheepWoolLayer` makes, so the quotient of the layer against \
-             the untinted body beneath it must be `linear(SHEEP_WOOL_COLORS[k])` \
+             the untinted body beneath it must be `SHEEP_WOOL_COLORS[k] / 255` \
              itself; {} of 15 dyes x 3 channels outside 8%{}. MUTATION tinting \
              it from `DYE_DIFFUSE_COLORS` (the tropical fish's table, and the \
              one the wool table is floor(x * 0.75) of) reads ~1.95x too bright \

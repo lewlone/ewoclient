@@ -39,7 +39,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   look, rear and graze), M429 (donkey and mule foals too), M430 (the hand's glint fades in
   the fog), M431 (the inventory preview wears your armour's trims), M432
   (terrain, water, the hand and particles shade in vanilla's colour space:
-  Rewo's frame was 10-30% too bright, landed from `claude/rewo-srgb-terrain`); the
+  Rewo's frame was 10-30% too bright, landed from `claude/rewo-srgb-terrain`),
+  M433 (mobs, block entities and dropped items too, and dyed armour); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -144,6 +145,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
 | `022d78ce` | **M431** — the inventory preview's armour trims; capeshot p9 |
 | `958f37ae` | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
+| (next) | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
 
 ## A broken default build, fixed
 
@@ -211,13 +213,12 @@ major bumps, so the next weekly group arrives without it.
   in M423; its glint in M430.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
-- **Entities shade in linear space** (M432's sibling): `entity.frag`
-  multiplies `entity_light`'s lightmap sample (a vanilla byte-space number)
-  into the linear texel, so mobs, block entities and dropped items stay too
-  bright the way terrain was. The fix is the same transfer around the whole
-  chain (the hurt and flash mixes already convert); mobtexshot's SHADES
-  oracle encodes the linear model and would be re-derived with it. Reported
-  to Control Room before widening, as agreed.
+- ~~Entities shade in linear space~~: M433 (and dyed armour with them).
+- **Entity face shading is a table, not vanilla's two lights**: `shade_for`
+  gives five values by model face; vanilla's `minecraft_mix_light` lights
+  each face from two fixed world directions (an axis-aligned face: top 1.0,
+  bottom 0.4, north/south 0.74, east/west 0.50), so a mob's sides shade by
+  which way it faces. After M433 the zombie's shirt reads 134 against 129.
 - **The sky reads too light** (noted on `c92d8dcc`; measured by M432's
   playtest, vanilla / Rewo): noon 176 205 255 / 192 216 255, midnight
   9 11 17 / 54 62 85. The terrain beside it matches to 1-3. Not touched.

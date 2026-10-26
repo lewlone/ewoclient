@@ -16,8 +16,9 @@
 //!
 //! **The flash is verified by prediction, not by a hard-coded colour.** The
 //! capsule is rendered twice — unhurt and hurt — and the hurt pixel is
-//! predicted *from the unhurt one* by undoing the light, encoding to sRGB,
-//! mixing vanilla's red overlay texel, decoding, and re-applying the light.
+//! predicted *from the unhurt one* by undoing the light, mixing vanilla's
+//! red overlay texel and re-applying the light, all on the encoded bytes
+//! (M433: vanilla's whole chain runs gamma-encoded, the light included).
 //! That tests the shader's mix and its position in the pipeline without the
 //! oracle needing to know the face shade, and it fails if the mix is done in
 //! linear space or applied after the lightmap instead of before it.
@@ -1338,21 +1339,18 @@ fn check_flash(c: &mut Checker, check: bool) -> Result<(), String> {
     let cold = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, false, 0.0)?;
     let hot = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, true, 0.0)?;
 
-    // Predict `hot` FROM `cold`: undo the light, encode to sRGB, mix vanilla's
-    // red overlay texel, decode, re-apply the light. This never needs to know
-    // the face shade — and it is only correct if the shader mixes in sRGB
-    // space and does it *before* the lightmap multiply.
+    // Predict `hot` FROM `cold`: undo the light, mix vanilla's red overlay
+    // texel, re-apply the light, all on the encoded bytes (M433). This never
+    // needs to know the face shade — and it is only correct if the shader
+    // mixes in sRGB space and does it *before* the lightmap multiply.
     let mut want = [0u8; 3];
     for i in 0..3 {
-        let lin = srgb_to_linear(cold[i] as f32 / 255.0);
-        let base = lin / light[i];
-        let s = linear_to_srgb(base);
+        let s = cold[i] as f32 / 255.0 / light[i];
         let mixed = 1.0 * (1.0 - HURT_ALPHA) + s * HURT_ALPHA;
         // `mix(overlay.rgb, color.rgb, overlay.a)`; overlay.rgb is (1,0,0), so
         // green and blue mix toward 0 while red mixes toward 1.
         let mixed = if i == 0 { mixed } else { s * HURT_ALPHA };
-        let out = srgb_to_linear(mixed) * light[i];
-        want[i] = (linear_to_srgb(out) * 255.0).round().clamp(0.0, 255.0) as u8;
+        want[i] = (mixed * light[i] * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     let close = (0..3).all(|i| (hot[i] as i32 - want[i] as i32).abs() <= CHANNEL_TOL);
     c.record(
@@ -1419,12 +1417,9 @@ fn check_flash(c: &mut Checker, check: bool) -> Result<(), String> {
     let both = render_capsule(&mut gpu, &mut off, &mut wr, &draw, light, true, 1.0)?;
     let mut want_w = [0u8; 3];
     for i in 0..3 {
-        let lin = srgb_to_linear(cold[i] as f32 / 255.0);
-        let s = linear_to_srgb(lin / light[i]);
+        let s = cold[i] as f32 / 255.0 / light[i];
         let mixed = (1.0 - WHITE_ALPHA) + s * WHITE_ALPHA;
-        want_w[i] = (linear_to_srgb(srgb_to_linear(mixed) * light[i]) * 255.0)
-            .round()
-            .clamp(0.0, 255.0) as u8;
+        want_w[i] = (mixed * light[i] * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     c.record(
         "c6.the_white_flash_is_the_exact_overlay_mix_and_red_wins",

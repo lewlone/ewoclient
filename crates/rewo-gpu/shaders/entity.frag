@@ -74,10 +74,11 @@ float fog_amount() {
 // `OverlayTexture`'s red row alpha, 0xB2 = 178.
 const float HURT_OVERLAY_ALPHA = 178.0 / 255.0;
 
-// Rewo works in linear light; vanilla mixes in its gamma-encoded texture
-// space. `mix` is not invariant under the transfer function, so mixing
-// linearly would give a visibly different flash. Convert, mix, convert back.
+// Vanilla shades in its gamma-encoded texture space; `mix` and the multiply
+// are not invariant under the transfer function, so the chain runs encoded
+// (M433) and is decoded once.
 vec3 to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
     return mix(c * 12.92,
                1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055,
                greaterThan(c, vec3(0.0031308)));
@@ -105,26 +106,29 @@ void main() {
     if (a < ALPHA_MIN) {
         discard;
     }
-    vec3 c = t.rgb * v_color.rgb;
+    // M433 — the whole chain on gamma-encoded numbers, as vanilla's: the
+    // texel and the vertex colour (handed over linear, `gamma_vertex`) are
+    // re-encoded and multiplied, the overlay mixed, the light (a lightmap
+    // sample, already vanilla's number) multiplied and the fog mixed there,
+    // and the result decoded once for the sRGB attachment. Until M433 the
+    // texel was multiplied linear, so the light and the face shade each acted
+    // as f^(1/2.2) (mobs too bright, as terrain was before M432).
+    vec3 s = to_srgb(t.rgb) * to_srgb(v_color.rgb);
     if (v_light_hurt.a > 0.5 && v_light_hurt.a < 1.5) {
         // mix(overlay.rgb, color.rgb, overlay.a) against the red row's texel.
-        vec3 s = to_srgb(c);
         s = mix(vec3(1.0, 0.0, 0.0), s, HURT_OVERLAY_ALPHA);
-        c = to_linear(s);
     } else if (v_light_hurt.a >= 1.5) {
         // M277 — a white column's texel.
         float u = floor((v_light_hurt.a - 2.0) * 15.0 + 0.5);
         float wa = floor((1.0 - u / 15.0 * 0.75) * 255.0) / 255.0;
-        vec3 s = to_srgb(c);
         s = mix(vec3(1.0), s, wa);
-        c = to_linear(s);
     }
-    c *= v_light_hurt.rgb;
+    s *= v_light_hurt.rgb;
     // M412 — `apply_fog`, last, toward the fog colour (alpha kept).
-    c = mix(c, fog.fog_col.rgb, fog_amount());
+    s = mix(s, to_srgb(fog.fog_col.rgb), fog_amount());
 #ifdef GAMMA_OUT
-    out_color = vec4(to_srgb(c), a);
+    out_color = vec4(s, a);
 #else
-    out_color = vec4(c, a);
+    out_color = vec4(to_linear(s), a);
 #endif
 }

@@ -1069,7 +1069,9 @@ fn run_cases(
 /// The entity light-transport case. Renders one capsule lit by the distinctive
 /// warm block-light colour (block 7, sky 0, factor 1.0, gamma 0 — the same
 /// state as the tint case, non-NaN), reads it back, and proves the readback's
-/// normalized linear RGB ratios match the CPU light's. The per-face shade is a
+/// normalized byte ratios match the CPU light's (M433: vanilla's chain
+/// multiplies the light into the encoded texel, so the byte is
+/// `255 · shade · light`). The per-face shade is a
 /// scalar, so it cancels under the max-normalization — only the `[f32;3]` light
 /// transport is under test, not the lighting geometry.
 fn run_entity_case(
@@ -1189,9 +1191,10 @@ fn run_entity_case(
         let _ = off.save_png(gpu, &dir.join(format!("{name}.png")));
     }
 
-    // Scan every non-black pixel (max RGB byte > 2), decode sRGB → linear, and
-    // sum RGB. Directional shade varies per pixel but is scalar, so the summed
-    // RGB is `light · Σshade`; normalizing by the max channel cancels `Σshade`.
+    // Scan every non-black pixel (max RGB byte > 2) and sum its bytes (M433:
+    // in gamma space, where the light multiplies). Directional shade varies
+    // per pixel but is scalar, so the summed RGB is `light · Σshade`;
+    // normalizing by the max channel cancels `Σshade`.
     let mut sum = [0f64; 3];
     let mut lit_pixels = 0usize;
     for px in img.as_chunks::<4>().0 {
@@ -1200,7 +1203,7 @@ fn run_entity_case(
         }
         lit_pixels += 1;
         for c in 0..3 {
-            sum[c] += srgb_to_linear(px[c] as f32 / 255.0) as f64;
+            sum[c] += px[c] as f64 / 255.0;
         }
     }
 
@@ -1481,16 +1484,5 @@ fn linear_to_srgb(c: f32) -> f32 {
         12.92 * c
     } else {
         1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-/// sRGB → linear decode — the exact inverse of [`linear_to_srgb`], used to turn
-/// the entity readback's sRGB bytes back into the linear space the CPU light
-/// lives in before comparing channel ratios.
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.040_449_936 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
     }
 }

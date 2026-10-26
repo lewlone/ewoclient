@@ -153,7 +153,8 @@ pub const MAX_ARMOR_SUBLAYERS: usize = 2;
 /// `EquipmentLayerRenderer.getColorForLayer` — so a layer whose colour came
 /// back 0 is **absent from this list**, not present with a zero tint. That is
 /// vanilla's `if (color != 0)` guard, resolved before the frame rather than
-/// inside the emitter.
+/// inside the emitter. The tint is vanilla's colour, bytes over 255 (gamma;
+/// `gamma_vertex` multiplies it with the shade, M433).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArmorPiece<'a> {
     pub layers: [Option<(&'a str, [f32; 3])>; MAX_ARMOR_SUBLAYERS],
@@ -583,7 +584,9 @@ impl CapeJoints {
 pub(crate) struct Vertex {
     pos: [f32; 3],
     uv: [f32; 2],
-    /// Base tint × directional face shade. **The world light is deliberately
+    /// Base tint × directional face shade, linear (`entity.frag` re-encodes
+    /// it; M433: a shade is folded in by [`gamma_vertex`], in vanilla's gamma
+    /// space). **The world light is deliberately
     /// NOT folded in here** (M21): vanilla's `entity.fsh` applies the hurt
     /// overlay to `texture * vertexColor` and only *then* multiplies by the
     /// lightmap, so the two have to reach the shader separately — otherwise a
@@ -2903,7 +2906,7 @@ impl EntityPass {
                 verts.push(Vertex {
                     pos: [d.pos[0] + lx, d.pos[1] + ly, d.pos[2] + lz],
                     uv: self.white_uv,
-                    color: [base[0] * shade, base[1] * shade, base[2] * shade, 1.0],
+                    color: gamma_vertex(shade, linear_to_srgb3(base)),
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
             }
@@ -3136,11 +3139,12 @@ impl EntityPass {
             }
             let n = face_normal(&m4);
             let shade = mobs::shade_for(n);
+            let color = gamma_vertex(shade, [1.0; 3]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
                     uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                    color: [shade, shade, shade, 1.0],
+                    color,
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
                 // Same position, same moment — see [`GlintSink`].
@@ -3231,11 +3235,12 @@ impl EntityPass {
                 p4[i] = frame.place(v);
             }
             let shade = mobs::shade_for(face_normal(&m4));
+            let color = gamma_vertex(shade, [1.0; 3]);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
                     uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                    color: [shade, shade, shade, 1.0],
+                    color,
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
                 // Same position, same moment — see [`GlintSink`].
@@ -3402,12 +3407,13 @@ impl EntityPass {
             }
             let n = face_normal(&p4);
             let shade = mobs::shade_for(n);
+            let color = gamma_vertex(shade, [1.0; 3]);
             let uv4 = cape_face_uv(cape.origin, &uvs);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
                     uv: uv4[i],
-                    color: [shade, shade, shade, 1.0],
+                    color,
                     // `CapeLayer` submits with `OverlayTexture.NO_OVERLAY`, so
                     // the cape does **not** take the red damage flash even
                     // while the wearer does. Hard-zeroed rather than read off
@@ -3541,12 +3547,13 @@ impl EntityPass {
             }
             let fnorm = face_normal(&p4);
             let shade = mobs::shade_for(fnorm);
+            let color = gamma_vertex(shade, [1.0; 3]);
             let uv4 = cape_face_uv(cape.origin, &q.uv);
             for &i in &[0usize, 1, 2, 0, 2, 3] {
                 verts.push(Vertex {
                     pos: p4[i],
                     uv: uv4[i],
-                    color: [shade, shade, shade, 1.0],
+                    color,
                     // As the rigid path: `CapeLayer` submits with
                     // `NO_OVERLAY`, so a hurt wearer's cape does not flash.
                     light_hurt: [light_r, light_g, light_b, 0.0],
@@ -3610,6 +3617,7 @@ impl EntityPass {
                     ])
                 });
                 let shade = mobs::shade_for(face_normal(&p4));
+                let color = gamma_vertex(shade, [1.0; 3]);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
                         pos: p4[i],
@@ -3617,7 +3625,7 @@ impl EntityPass {
                             (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
                             (ay as f32 + uvs[i][1]) / ATLAS_H as f32,
                         ],
-                        color: [shade, shade, shade, 1.0],
+                        color,
                         light_hurt: [light_r, light_g, light_b, hurt],
                     });
                     if w.foil {
@@ -3751,6 +3759,9 @@ impl EntityPass {
                         }
                         let n = face_normal(&p4);
                         let shade = mobs::shade_for(n);
+                        // M433 — the dye is vanilla's colour, bytes over 255: multiplied with
+                        // the shade on gamma-encoded numbers.
+                        let color = gamma_vertex(shade, tint);
                         let uv4: [[f32; 2]; 4] = std::array::from_fn(|i| {
                             [
                                 (ax as f32 + uvs[i][0]) / ATLAS_W as f32,
@@ -3766,7 +3777,7 @@ impl EntityPass {
                             verts.push(Vertex {
                                 pos: p4[i],
                                 uv: uv4[i],
-                                color: [shade * tint[0], shade * tint[1], shade * tint[2], 1.0],
+                                color,
                                 light_hurt: [light_r, light_g, light_b, hurt],
                             });
                             // M50: the foil, from the same `p4` at the same moment.
@@ -4002,19 +4013,12 @@ impl EntityPass {
         // `None` here means "there is no such layer, or its gate said no", and
         // in the second case its quads are skipped outright rather than moved.
         let coplanar_slot = model.coplanar_slot;
-        // M68: per-texture-slot layer colour, linearized once. Vanilla tints a
-        // *layer*; Rewo bakes a layer as a texture slot, so one entry per
-        // slot is the same statement. `1.0` is untinted, and `shade * 1.0` is
-        // exact in IEEE — every mob that has no tinted layer renders the
-        // bytes it did before this existed.
+        // M68: per-texture-slot layer colour. Vanilla tints a *layer*; Rewo
+        // bakes a layer as a texture slot, so one entry per slot is the same
+        // statement. `1.0` is untinted. M433 — kept as vanilla's bytes over
+        // 255 (gamma), which `gamma_vertex` multiplies with the shade.
         let mut slot_tint = [[1.0f32; 3]; MAX_MOB_TEXTURES];
-        let lin3 = |rgb: [u8; 3]| {
-            [
-                srgb_to_linear(rgb[0] as f32 / 255.0),
-                srgb_to_linear(rgb[1] as f32 / 255.0),
-                srgb_to_linear(rgb[2] as f32 / 255.0),
-            ]
-        };
+        let lin3 = |rgb: [u8; 3]| rgb.map(|b| b as f32 / 255.0);
         // `SheepWoolLayer` and `SheepWoolUndercoatLayer` both pass
         // `state.getWoolColor()`, so the two slots take the *same* colour —
         // that is why the undercoat needs no dye field of its own.
@@ -4084,7 +4088,7 @@ impl EntityPass {
             // same way. Linearized above: the tables are sRGB and the
             // attachment encodes on store (render discipline #1).
             let t = slot_tint[q.tex as usize];
-            let c = [q.shade * t[0], q.shade * t[1], q.shade * t[2]];
+            let c = gamma_vertex(q.shade, t);
             // Three things can move a quad's UVs onto a different texture of
             // the same size: a player's uploaded skin, a pack's ETF variant,
             // and (M175) a baby mob's whole-sheet swap. They never apply to
@@ -4176,7 +4180,7 @@ impl EntityPass {
                         return;
                     }
                     let p4 = place(q);
-                    let c = [q.shade * tint[0], q.shade * tint[1], q.shade * tint[2]];
+                    let c = gamma_vertex(q.shade, *tint);
                     for &i in &[0usize, 1, 2, 0, 2, 3] {
                         out.push(Vertex {
                             pos: p4[i],
@@ -4228,7 +4232,7 @@ impl EntityPass {
                                 (ax as f32 + q.uv[i][0]) / ATLAS_W as f32,
                                 (ay as f32 + q.uv[i][1]) / ATLAS_H as f32,
                             ],
-                            color: [q.shade, q.shade, q.shade, 1.0],
+                            color: gamma_vertex(q.shade, [1.0; 3]),
                             light_hurt: [light_r, light_g, light_b, 0.0],
                         });
                     }
@@ -4316,7 +4320,7 @@ impl EntityPass {
                     continue;
                 }
                 let p4 = place(q);
-                let c = if shaded { q.shade } else { 1.0 };
+                let c = if shaded { srgb_to_linear(q.shade) } else { 1.0 };
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     emis.push(Vertex {
                         pos: p4[i],
@@ -7968,11 +7972,13 @@ impl EntityPass {
                 // paths do: the baked face directions are pre-rotation.
                 let n = face_normal(&m4);
                 let shade = mobs::shade_for(n);
+                // M433 — the banner's dye arrives linear; vanilla multiplies its bytes.
+                let color = gamma_vertex(shade, linear_to_srgb3(d.tint));
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [shade * d.tint[0], shade * d.tint[1], shade * d.tint[2], 1.0],
+                        color,
                         // A block entity is never hurt — the overlay flag is
                         // a `LivingEntity` property — but lit TNT flashes
                         // white (M277).
@@ -8046,12 +8052,17 @@ impl EntityPass {
                     p4[i] = [d.pos[0] + p[0], d.pos[1] + p[1], d.pos[2] + p[2]];
                 }
                 let shade = mobs::shade_for(face_normal(&m4));
-                let [cr, cg, cb] = bb.tint.unwrap_or([shade; 3]);
+                // M433 — the orb's tint arrives linear and unshaded; the shade folds in
+                // gamma space.
+                let color = bb.tint.map_or_else(
+                    || gamma_vertex(shade, [1.0; 3]),
+                    |t| [t[0], t[1], t[2], 1.0],
+                );
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [cr, cg, cb, 1.0],
+                        color,
                         light_hurt: [light_r, light_g, light_b, hurt],
                     });
                     if let Some(g) = glint.as_deref_mut() {
@@ -8169,11 +8180,12 @@ impl EntityPass {
                 // directions are not the directions it faces.
                 let n = face_normal(&m4);
                 let shade = mobs::shade_for(n);
+                let color = gamma_vertex(shade, [1.0; 3]);
                 for &i in &[0usize, 1, 2, 0, 2, 3] {
                     verts.push(Vertex {
                         pos: p4[i],
                         uv: [u0 + q.uv[i][0] * du, v0 + q.uv[i][1] * dv],
-                        color: [shade, shade, shade, 1.0],
+                        color,
                         light_hurt: [light_r, light_g, light_b, hurt],
                     });
                     // Same position, same moment — a dropped stack bobs, spins
@@ -9102,6 +9114,34 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
     }
+}
+
+/// Linear component → sRGB, [`srgb_to_linear`]'s inverse.
+pub fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn linear_to_srgb3(c: [f32; 3]) -> [f32; 3] {
+    c.map(linear_to_srgb)
+}
+
+/// M433 — an entity vertex colour as vanilla's `vertexColor`: the face shade
+/// times the layer's tint (`tint` in vanilla's space, bytes over 255),
+/// multiplied on gamma-encoded numbers as `entity.fsh` does, and handed to
+/// the pass linear (`entity.frag` re-encodes it before multiplying by the
+/// texel and the light). Until M433 the shade multiplied the linear texel, so
+/// a face shade of 0.5 acted as 0.73.
+pub(crate) fn gamma_vertex(shade: f32, tint: [f32; 3]) -> [f32; 4] {
+    if tint == [1.0; 3] {
+        let s = srgb_to_linear(shade);
+        return [s, s, s, 1.0];
+    }
+    let [r, g, b] = tint.map(|t| srgb_to_linear(shade * t));
+    [r, g, b, 1.0]
 }
 
 /// Blit a `w`×`h` RGBA entity skin into the atlas at (x, y). Returns whether
@@ -10131,6 +10171,29 @@ mod tests {
         assert_eq!(srgb_to_linear(0.0), 0.0);
         assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
         assert!(srgb_to_linear(0.5) < 0.5, "midtones darken in linear");
+    }
+
+    /// M433 — `entity.frag` re-encodes the vertex colour, so what reaches
+    /// vanilla's gamma-space multiply is `shade · tint`, not its 2.2th root.
+    #[test]
+    fn a_vertex_colour_re_encodes_to_vanillas_shade_times_tint() {
+        for (shade, tint) in [
+            (0.5, [1.0; 3]),
+            (0.8, [0.6, 0.3, 0.1]),
+            (1.0, [0.25, 1.0, 0.5]),
+        ] {
+            let v = gamma_vertex(shade, tint);
+            for c in 0..3 {
+                let want = shade * tint[c];
+                assert!(
+                    (linear_to_srgb(v[c]) - want).abs() < 1e-5,
+                    "{shade} {tint:?} ch{c}"
+                );
+            }
+            assert_eq!(v[3], 1.0);
+        }
+        // The pre-M433 vertex colour (the shade multiplied in linear) does not.
+        assert!((linear_to_srgb(0.5) - 0.5).abs() > 0.2);
     }
 
     #[test]
