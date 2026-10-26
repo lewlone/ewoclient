@@ -247,7 +247,7 @@ fn run_cases(
             block_factor: 1.0,
             ..Default::default()
         };
-        let (exp, lm) = expected_srgb(7, 0, &cpu_state(&gs));
+        let (exp, lm) = expected_bytes(7, 0, &cpu_state(&gs));
         let act = render_quad(gpu, off, wr, view_proj, draw, name, 7, 0, gs, false, args)?;
         compare_case(failures, name, act, exp, lm);
 
@@ -276,7 +276,7 @@ fn run_cases(
             block_factor: 1.0,
             ..Default::default()
         };
-        let (e1, lm1) = expected_srgb(7, 0, &cpu_state(&g1));
+        let (e1, lm1) = expected_bytes(7, 0, &cpu_state(&g1));
         let a1 = render_quad(gpu, off, wr, view_proj, draw, n1, 7, 0, g1, false, args)?;
         compare_case(failures, n1, a1, e1, lm1);
 
@@ -285,7 +285,7 @@ fn run_cases(
             block_factor: 1.8,
             ..Default::default()
         };
-        let (e2, lm2) = expected_srgb(7, 0, &cpu_state(&g2));
+        let (e2, lm2) = expected_bytes(7, 0, &cpu_state(&g2));
         let a2 = render_quad(gpu, off, wr, view_proj, draw, n2, 7, 0, g2, false, args)?;
         compare_case(failures, n2, a2, e2, lm2);
 
@@ -310,7 +310,7 @@ fn run_cases(
                 brightness_factor: *bf,
                 ..Default::default()
             };
-            let (e, lm) = expected_srgb(4, 4, &cpu_state(&gs));
+            let (e, lm) = expected_bytes(4, 4, &cpu_state(&gs));
             let a = render_quad(gpu, off, wr, view_proj, draw, &name, 4, 4, gs, false, args)?;
             compare_case(failures, &name, a, e, lm);
             lumas[i] = luma(a);
@@ -335,7 +335,7 @@ fn run_cases(
             night_vision_factor: 1.0,
             ..Default::default()
         };
-        let (e, lm) = expected_srgb(0, 0, &cpu_state(&gs));
+        let (e, lm) = expected_bytes(0, 0, &cpu_state(&gs));
         let a = render_quad(gpu, off, wr, view_proj, draw, name, 0, 0, gs, false, args)?;
         compare_case(failures, name, a, e, lm);
     }
@@ -416,7 +416,7 @@ fn run_cases(
             darkness_scale: ds_pos,
             ..Default::default()
         };
-        let (ep, lmp) = expected_srgb(7, 4, &cpu_state(&gp));
+        let (ep, lmp) = expected_bytes(7, 4, &cpu_state(&gp));
         let ap = render_quad(
             gpu, off, wr, view_proj, draw, name_pos, 7, 4, gp, false, args,
         )?;
@@ -428,7 +428,7 @@ fn run_cases(
             darkness_scale: ds_zero,
             ..Default::default()
         };
-        let (ez, lmz) = expected_srgb(7, 4, &cpu_state(&gz));
+        let (ez, lmz) = expected_bytes(7, 4, &cpu_state(&gz));
         let az = render_quad(
             gpu, off, wr, view_proj, draw, name_zero, 7, 4, gz, false, args,
         )?;
@@ -455,7 +455,7 @@ fn run_cases(
             ..Default::default()
         };
         let name_w = "water-b4s4-g.5";
-        let (ew, lmw) = expected_srgb(4, 4, &cpu_state(&gw));
+        let (ew, lmw) = expected_bytes(4, 4, &cpu_state(&gw));
         let aw = render_quad(gpu, off, wr, view_proj, draw, name_w, 4, 4, gw, true, args)?;
         compare_case(failures, name_w, aw, ew, lmw);
 
@@ -520,7 +520,7 @@ fn run_cases(
         // (a) Absolute: the texel is white, so the stored linear value is
         //     `colour * lm` — graded against the independent CPU product.
         let name_c = "packed-color-b12s8";
-        let (ec, lmc) = expected_srgb_colored(BLOCK, SKY, &cpu_state(&gs), color);
+        let (ec, lmc) = expected_bytes_colored(BLOCK, SKY, &cpu_state(&gs), color);
         let ac = render_quad_colored(
             gpu,
             off,
@@ -537,7 +537,9 @@ fn run_cases(
         compare_case(failures, name_c, ac, ec, lmc);
 
         // (b) Ratio, independent of the CPU lightmap: render the SAME cell as
-        //     the exact-white quad and take the per-channel linear ratio. The
+        //     the exact-white quad and take the per-channel byte ratio (M432:
+        //     vanilla's multiply runs on the encoded numbers, so the bytes
+        //     themselves stand in the colour's ratio). The
         //     lightmap is identical in both renders, so it divides out and what
         //     remains is purely the reconstructed colour — this check still
         //     holds even if `sample` itself were wrong, which the absolute
@@ -547,27 +549,27 @@ fn run_cases(
             gpu, off, wr, view_proj, draw, name_w, BLOCK, SKY, gs, false, args,
         )?;
         const RATIO_TOL: f32 = 0.03;
-        // Below this the white reference is too dark for the sRGB byte
+        // Below this the white reference is too dark for the byte
         // quantization to carry a meaningful ratio; report rather than grade.
         const RATIO_FLOOR: f32 = 0.05;
         for c in 0..3 {
-            let white_lin = srgb_to_linear(aw[c] as f32 / 255.0);
-            let colored_lin = srgb_to_linear(ac[c] as f32 / 255.0);
+            let white_lin = aw[c] as f32 / 255.0;
+            let colored_lin = ac[c] as f32 / 255.0;
             if PROBES.bad(white_lin < RATIO_FLOOR) {
                 failures.push(format!(
-                    "packed-color channel {c}: white reference linear {white_lin:.4} < {RATIO_FLOOR} — too dark to grade the ratio"
+                    "packed-color channel {c}: white reference {white_lin:.4} < {RATIO_FLOOR} — too dark to grade the ratio"
                 ));
                 continue;
             }
             let ratio = colored_lin / white_lin;
             let e = (ratio - color[c]).abs();
             println!(
-                "[lightmapshot] packed-color channel {c}: colored/white linear ratio {ratio:.4} vs reconstructed {:.4} (|Δ| {e:.4})",
+                "[lightmapshot] packed-color channel {c}: colored/white byte ratio {ratio:.4} vs reconstructed {:.4} (|Δ| {e:.4})",
                 color[c]
             );
             if PROBES.bad(e > RATIO_TOL) {
                 failures.push(format!(
-                    "packed-color channel {c}: linear ratio {ratio:.4} vs reconstructed colour {:.4} (|Δ| {e:.4} > {RATIO_TOL})",
+                    "packed-color channel {c}: byte ratio {ratio:.4} vs reconstructed colour {:.4} (|Δ| {e:.4} > {RATIO_TOL})",
                     color[c]
                 ));
             }
@@ -580,9 +582,8 @@ fn run_cases(
         let name_s = "smooth-b12.5s8";
         let coords = 200 | (SKY as i32 * 16) << 16;
         let lm = rewo_world::lightmap::sample_smooth(200, SKY * 16, &cpu_state(&gs));
-        let es: [u8; 3] = std::array::from_fn(|c| {
-            (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8
-        });
+        // M432 — vanilla's byte, `255 · lm`.
+        let es: [u8; 3] = std::array::from_fn(|c| (lm[c] * 255.0).round().clamp(0.0, 255.0) as u8);
         let smooth = render_quad_colored(
             gpu, off, wr, view_proj, draw, name_s, coords, gs, false, args, TINT_WHITE,
         )?;
@@ -660,17 +661,17 @@ fn run_cases(
         // (a) The unlit texel. block 0, sky 0, no night vision, gamma 0: the
         //     whole lightmap IS the ambient (`max(ambient, nv*0)`, nothing
         //     added, notGamma mixed in at weight 0). Graded against the CPU.
-        let mut unlit: Vec<(&str, [u8; 3])> = Vec::new();
+        let mut unlit: Vec<(&str, [u8; 3], [u8; 3])> = Vec::new();
         for (tag, argb) in [("ow", OW), ("nether", NETHER), ("end", END)] {
             let name = format!("ambient-{tag}-b0s0");
             let gs = WorldLightmapState {
                 ambient_color: amb(argb),
                 ..Default::default()
             };
-            let (e, lm) = expected_srgb(0, 0, &cpu_state(&gs));
+            let (e, lm) = expected_bytes(0, 0, &cpu_state(&gs));
             let a = render_quad(gpu, off, wr, view_proj, draw, &name, 0, 0, gs, false, args)?;
             compare_case(failures, &name, a, e, lm);
-            unlit.push((tag, a));
+            unlit.push((tag, a, e));
         }
 
         // (b) The mutation/sensitivity check: the SAME unlit cell with the
@@ -694,20 +695,25 @@ fn run_cases(
             "[lightmapshot] ambient-default-b0s0 readback ({}, {}, {}) — the black-ambient baseline",
             black[0], black[1], black[2]
         );
-        for (tag, a) in &unlit {
+        for (tag, a, e) in &unlit {
             let d = max_delta(*a, black);
-            println!("[lightmapshot] ambient {tag} vs black-ambient max channel Δ {d}");
-            // Even the Overworld's dim #0a0a0a is 10/255 linear ≈ sRGB 89.
-            if PROBES.bad(d < 20) {
+            // M432 — the unlit texel IS the ambient, and vanilla's byte is the
+            // ambient's own: the Overworld's dim #0a0a0a renders 10 (the old
+            // model encoded it as if linear, ≈ 89, and asked for 20).
+            let want = (*e.iter().max().unwrap() as i32 - CHANNEL_TOL).max(1);
+            println!(
+                "[lightmapshot] ambient {tag} vs black-ambient max channel Δ {d} (want >= {want})"
+            );
+            if PROBES.bad(d < want) {
                 failures.push(format!(
-                    "ambient {tag}: only Δ{d} vs the black-ambient baseline (<20) — the ambient uniform does not own the pixel"
+                    "ambient {tag}: only Δ{d} vs the black-ambient baseline (<{want}) — the ambient uniform does not own the pixel"
                 ));
             }
         }
         // And the three dimensions must be distinguishable from each other, so
         // the check cannot pass on a single hard-coded non-black constant.
-        for (i, (ta, a)) in unlit.iter().enumerate() {
-            for (tb, b) in unlit.iter().skip(i + 1) {
+        for (i, (ta, a, _)) in unlit.iter().enumerate() {
+            for (tb, b, _) in unlit.iter().skip(i + 1) {
                 let d = max_delta(*a, *b);
                 if PROBES.bad(d < 10) {
                     failures.push(format!(
@@ -732,7 +738,7 @@ fn run_cases(
             ambient_color: amb(NETHER),
             ..Default::default()
         };
-        let (em, lmm) = expected_srgb(4, 4, &cpu_state(&mid_amb));
+        let (em, lmm) = expected_bytes(4, 4, &cpu_state(&mid_amb));
         let am = render_quad(
             gpu,
             off,
@@ -775,7 +781,7 @@ fn run_cases(
             ambient_color: amb(END),
             ..Default::default()
         };
-        let (ew, lmw) = expected_srgb(4, 4, &cpu_state(&water_amb));
+        let (ew, lmw) = expected_bytes(4, 4, &cpu_state(&water_amb));
         let aw = render_quad(
             gpu,
             off,
@@ -857,15 +863,16 @@ fn run_cases(
             args,
         )?;
 
-        // What the shader must produce for a given fog fraction. The mix runs
-        // in LINEAR space inside the shader and the attachment re-encodes on
-        // store, so the prediction has to make the same round trip.
+        // What the shader must produce for a given fog fraction. M432 — the
+        // mix runs on gamma-encoded numbers, as vanilla's: the unfogged byte
+        // toward the encoded fog colour, then stored as is.
         let predict = |f: f32| -> [u8; 3] {
             let mut out = [0u8; 3];
             for c in 0..3 {
-                let base = srgb_to_linear(clear[c] as f32 / 255.0);
-                let mixed = base + (FOG_LINEAR[c] - base) * f;
-                out[c] = (linear_to_srgb(mixed.clamp(0.0, 1.0)) * 255.0).round() as u8;
+                let base = clear[c] as f32 / 255.0;
+                let fog = linear_to_srgb(FOG_LINEAR[c]);
+                let mixed = base + (fog - base) * f;
+                out[c] = (mixed.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
             out
         };
@@ -997,7 +1004,7 @@ fn run_cases(
         // is 4/3 whatever the sampled pixel's exact distance. Dividing by
         // `max(width, 1)`, as Rewo did until M421, makes it 1. The fraction
         // is read back off the blue channel: the clear quad is white and the
-        // fog's blue is 0, so linear blue is `1 - f`.
+        // fog's blue is 0, so blue is `1 - f` (M432: in gamma space).
         wr.set_fog(1.0e6, 1.0e6 + 1.0);
         let mut band = |width: f32, name: &str| -> Result<f32, String> {
             let px = render_quad(
@@ -1013,9 +1020,11 @@ fn run_cases(
                 false,
                 args,
             )?;
-            let clear_b = srgb_to_linear(clear[2] as f32 / 255.0);
-            let b = srgb_to_linear(px[2] as f32 / 255.0);
-            Ok((clear_b - b) / (clear_b - FOG_LINEAR[2]))
+            // M432 — in gamma space, where the mix runs (the fog's blue
+            // encodes to 0 too).
+            let clear_b = clear[2] as f32 / 255.0;
+            let b = px[2] as f32 / 255.0;
+            Ok((clear_b - b) / (clear_b - linear_to_srgb(FOG_LINEAR[2])))
         };
         let f_narrow = band(0.75, "fog-narrow-env")?;
         let f_wide = band(1.0, "fog-unit-env")?;
@@ -1372,34 +1381,33 @@ fn cpu_state(g: &WorldLightmapState) -> LightmapState {
 }
 
 /// The independent CPU expectation: the lightmap texel as the RGBA8 texture
-/// stores it (`lightmap::texel`), encoded linear→sRGB, rounded to bytes.
-/// Returns `(sRGB bytes, linear lm)`.
-fn expected_srgb(block: u8, sky: u8, cpu: &LightmapState) -> ([u8; 3], [f32; 3]) {
+/// stores it (`lightmap::texel`) times a white texel, vanilla's arithmetic:
+/// `texture · vertexColor · lightmap` on gamma-encoded numbers into a
+/// non-sRGB target, so the byte is `255 · lm`. M432 — until the colour-space
+/// fix this encoded `lm` as if linear (`to_srgb(lm)`), the old model.
+/// Returns `(bytes, lm)`.
+fn expected_bytes(block: u8, sky: u8, cpu: &LightmapState) -> ([u8; 3], [f32; 3]) {
     let lm = texel(block, sky, cpu);
-    let px: [u8; 3] =
-        std::array::from_fn(|c| (linear_to_srgb(lm[c]) * 255.0).round().clamp(0.0, 255.0) as u8);
+    let px: [u8; 3] = std::array::from_fn(|c| (lm[c] * 255.0).round().clamp(0.0, 255.0) as u8);
     (px, lm)
 }
 
-/// [`expected_srgb`] with a non-white per-vertex colour folded in.
+/// [`expected_bytes`] with a non-white per-vertex colour folded in.
 ///
-/// The fragment computes `c.rgb * v_color * lm` and the synthetic texel is
-/// white, so the stored linear value is `colour * lm`. `expected_srgb` is
-/// exactly this specialized to a white colour; passing `[1.0; 3]` here
-/// reproduces it. `colour` is the case's bytes over 255, computed from the
-/// constant rather than from `MeshVertex`'s own accessor.
-fn expected_srgb_colored(
+/// The fragment computes `texel · v_color · lm` and the synthetic texel is
+/// white, so the byte is `255 · colour · lm`. `expected_bytes` is exactly this
+/// specialized to a white colour; passing `[1.0; 3]` here reproduces it.
+/// `colour` is the case's bytes over 255, computed from the constant rather
+/// than from `MeshVertex`'s own accessor.
+fn expected_bytes_colored(
     block: u8,
     sky: u8,
     cpu: &LightmapState,
     color: [f32; 3],
 ) -> ([u8; 3], [f32; 3]) {
     let lm = texel(block, sky, cpu);
-    let px: [u8; 3] = std::array::from_fn(|c| {
-        (linear_to_srgb(lm[c] * color[c]) * 255.0)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    });
+    let px: [u8; 3] =
+        std::array::from_fn(|c| (lm[c] * color[c] * 255.0).round().clamp(0.0, 255.0) as u8);
     (px, lm)
 }
 

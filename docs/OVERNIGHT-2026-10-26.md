@@ -37,7 +37,9 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   live client under water draws the water's fog), M425 (and its clouds
   fade at the water's band, r231), M426 (horses graze), M427 (the fog darkens toward the void, under y −32), M428 (foals walk,
   look, rear and graze), M429 (donkey and mule foals too), M430 (the hand's glint fades in
-  the fog), M431 (the inventory preview wears your armour's trims); the
+  the fog), M431 (the inventory preview wears your armour's trims), M432
+  (terrain, water, the hand and particles shade in vanilla's colour space:
+  Rewo's frame was 10-30% too bright, landed from `claude/rewo-srgb-terrain`); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -140,7 +142,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
 | `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
 | `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
-| (next) | **M431** — the inventory preview's armour trims; capeshot p9 |
+| `022d78ce` | **M431** — the inventory preview's armour trims; capeshot p9 |
+| (next) | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
 
 ## A broken default build, fixed
 
@@ -171,6 +174,11 @@ default build. Bisecting across that range needs `--features gates`.
   3.2 blocks above the origin during the timed witnesses. Cause still open;
   the next sighting should log the bot's position when the lectern stage
   starts.
+- **`rewo-audio` `a_slow_read_is_not_re_requested_on_every_tick`**: failed
+  once in M432's full workspace run ("the stream was opened and its first
+  pump requested"), passed five of five alone. It gives the decode worker
+  40 × 2 ms to open the stream; under the whole suite's load that is not
+  always enough. The sound sink is the harness session's, so left to it.
 
 ## Dependabot PR #6
 
@@ -203,6 +211,16 @@ major bumps, so the next weekly group arrives without it.
   in M423; its glint in M430.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
+- **Entities shade in linear space** (M432's sibling): `entity.frag`
+  multiplies `entity_light`'s lightmap sample (a vanilla byte-space number)
+  into the linear texel, so mobs, block entities and dropped items stay too
+  bright the way terrain was. The fix is the same transfer around the whole
+  chain (the hurt and flash mixes already convert); mobtexshot's SHADES
+  oracle encodes the linear model and would be re-derived with it. Reported
+  to Control Room before widening, as agreed.
+- **The sky reads too light** (noted on `c92d8dcc`; measured by M432's
+  playtest, vanilla / Rewo): noon 176 205 255 / 192 216 255, midnight
+  9 11 17 / 54 62 85. The terrain beside it matches to 1-3. Not touched.
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
   entity's outline is vanilla's behaviour (`energySwirl` and `breezeWind`
   set no outline property), not a gap.

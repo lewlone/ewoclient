@@ -25,6 +25,18 @@ layout(push_constant) uniform Fog {
     vec4 env_fog;                     // x environmental start, y its end
 } fog;
 
+// M432 — the sRGB transfer, both ways (IEC 61966-2-1). Vanilla shades
+// GAMMA-ENCODED numbers into a non-sRGB target; this texture is decoded by
+// its sRGB view, so the texel is re-encoded, shaded (and fogged) there, and
+// decoded once for the sRGB attachment's own encode.
+vec3 to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
 // `fog.glsl`'s `linear_fog_value` (M421).
 float linear_fog_value(float d, float s, float e) {
     if (d <= s) {
@@ -35,8 +47,12 @@ float linear_fog_value(float d, float s, float e) {
     return (d - s) / (e - s);
 }
 
-vec3 fogged(vec3 c) {
-    return mix(c, fog.fog_col.rgb, linear_fog_value(v_dist, fog.env_fog.x, fog.env_fog.y));
+// The texel times its shade, fogged, all in gamma space (M432), and
+// decoded once for the attachment.
+vec3 shaded(vec3 texel, float shade) {
+    vec3 s = to_srgb(texel) * shade;
+    s = mix(s, to_srgb(fog.fog_col.rgb), linear_fog_value(v_dist, fog.env_fog.x, fog.env_fog.y));
+    return to_linear(s);
 }
 
 void main() {
@@ -48,11 +64,11 @@ void main() {
         if (c.a <= 0.0) {
             discard;
         }
-        out_color = vec4(fogged(c.rgb * -v_shade), c.a);
+        out_color = vec4(shaded(c.rgb, -v_shade), c.a);
         return;
     }
     if (c.a < 0.1) {
         discard;
     }
-    out_color = vec4(fogged(c.rgb * v_shade), 1.0);
+    out_color = vec4(shaded(c.rgb, v_shade), 1.0);
 }

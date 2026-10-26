@@ -35,6 +35,18 @@ layout(location = 3) in vec3 v_worldpos;
 
 layout(location = 0) out vec4 out_color;
 
+// M432 — the sRGB transfer, both ways (IEC 61966-2-1). Vanilla shades
+// GAMMA-ENCODED numbers into a non-sRGB target; this texture is decoded by
+// its sRGB view, so the texel is re-encoded, shaded (and fogged) there, and
+// decoded once for the sRGB attachment's own encode.
+vec3 to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
 // M421 — `fog.glsl`'s `linear_fog_value`: piecewise, with no floor on the
 // band's width (the 1-block floor Rewo divided by halved lava's 0.25..1 band;
 // an empty band, start == end, is a step).
@@ -57,7 +69,11 @@ void main() {
         c = texture(u_tex, vec3(v_uv, float(v_layer)));
     }
     // `v_color` already carries the lightmap (world.vert, per vertex).
-    vec3 rgb = c.rgb * v_color;
+    // M432 (`claude/rewo-srgb-terrain`) — the multiply and the fog on
+    // gamma-encoded values, as vanilla's: done on the decoded texel every
+    // factor f acted as f^(1/2.2) (face shade 0.6 rendered as 0.79, plains
+    // grass grey-blue, midnight like dusk; playtest `rewo_lighting`).
+    vec3 rgb = to_srgb(c.rgb) * v_color;
     vec3 rel = v_worldpos - pc.cam_fog.xyz;
     // M206: vanilla's fog.glsl measures the environmental term with
     // `fog_spherical_distance` and the render-distance one with
@@ -70,6 +86,6 @@ void main() {
     float fog = linear_fog_value(cyl, pc.cam_fog.w, pc.fog_col.w);
     float env = linear_fog_value(dist, lmx.env_fog.x, lmx.env_fog.y);
     fog = max(fog, env);
-    rgb = mix(rgb, pc.fog_col.rgb, fog);
-    out_color = vec4(rgb, c.a);
+    rgb = mix(rgb, to_srgb(pc.fog_col.rgb), fog);
+    out_color = vec4(to_linear(rgb), c.a);
 }
