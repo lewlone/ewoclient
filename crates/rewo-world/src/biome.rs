@@ -288,6 +288,9 @@ pub enum ColorResolver {
 #[derive(Clone, Debug)]
 pub struct BiomeRegistry {
     pub biomes: Vec<BiomeDef>,
+    /// Each biome's water-fog attributes, by biome id (M402). Empty, or a
+    /// shorter list, means the defaults (`EnvironmentAttributes`).
+    pub water_fog: Vec<WaterFogAttrs>,
     /// In-memory global-palette bits for a *direct* biome container:
     /// `ceil(log2(count))` (`PalettedContainer` global strategy).
     pub global_bits: u32,
@@ -302,10 +305,27 @@ impl BiomeRegistry {
         let global_bits = ceil_log2(biomes.len());
         Self {
             biomes,
+            water_fog: Vec::new(),
             global_bits,
             dimension_sky: None,
             dimension_fog: None,
         }
+    }
+
+    /// Camera `visual/water_fog_color` and `visual/water_fog_end_distance`
+    /// (`WaterFogEnvironment`): each biome's value over the attribute
+    /// defaults, blended by the camera's Gaussian biome weights like
+    /// [`BiomeContext::camera_fog`]. The dimension types set neither.
+    pub fn water_fog_value(&self, biome_id: u16) -> (i32, f32) {
+        let a = self
+            .water_fog
+            .get(biome_id as usize)
+            .copied()
+            .unwrap_or_default();
+        (
+            a.color.unwrap_or(WATER_FOG_COLOR),
+            a.end.apply(WATER_FOG_END_DISTANCE),
+        )
     }
 
     pub fn get(&self, idx: usize) -> Option<&BiomeDef> {
@@ -519,6 +539,111 @@ impl BiomeContext {
     }
 }
 
+/// `EnvironmentAttributes.WATER_FOG_COLOR`'s default (`-16448205`).
+pub const WATER_FOG_COLOR: i32 = 0xFF05_0533_u32 as i32;
+/// `WATER_FOG_START_DISTANCE`'s default; no vanilla biome changes it.
+pub const WATER_FOG_START_DISTANCE: f32 = -8.0;
+/// `WATER_FOG_END_DISTANCE`'s default.
+pub const WATER_FOG_END_DISTANCE: f32 = 96.0;
+
+/// A biome's water-fog attributes (`minecraft:visual/water_fog_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WaterFogAttrs {
+    /// The bare-value form: an override. `None` = the default.
+    pub color: Option<i32>,
+    pub end: FloatModifier,
+}
+
+/// A float attribute's per-biome entry: a bare value overrides, the
+/// `{modifier, argument}` form applies an `AttributeModifier` to the base.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum FloatModifier {
+    #[default]
+    Inherit,
+    Override(f32),
+    Add(f32),
+    Multiply(f32),
+}
+
+impl FloatModifier {
+    pub fn apply(self, base: f32) -> f32 {
+        match self {
+            Self::Inherit => base,
+            Self::Override(v) => v,
+            Self::Add(v) => base + v,
+            Self::Multiply(v) => base * v,
+        }
+    }
+}
+
+impl BiomeContext {
+    /// [`BiomeRegistry::water_fog_value`] at the camera, blended over the
+    /// camera's Gaussian biome weights (`SpatialAttributeInterpolator`): the
+    /// colour as [`Self::camera_fog`] blends it, the distance linearly.
+    pub fn camera_water_fog(
+        &self,
+        eye: [f64; 3],
+        sample_quart: &impl Fn(i32, i32, i32) -> u16,
+    ) -> (i32, f32) {
+        let groups =
+            gaussian_biome_weights([eye[0] * 0.25, eye[1] * 0.25, eye[2] * 0.25], |x, y, z| {
+                sample_quart(x, y, z)
+            });
+        let mut result: Option<(i32, f32)> = None;
+        let mut accum = 0.0f64;
+        for (biome_id, weight) in &groups {
+            let (c, e) = self.registry.water_fog_value(*biome_id);
+            accum += weight;
+            result = Some(match result {
+                None => (c, e),
+                Some((pc, pe)) => {
+                    let frac = (weight / accum) as f32;
+                    (srgb_lerp(frac, pc, c), pe + frac * (e - pe))
+                }
+            });
+        }
+        result.unwrap_or((WATER_FOG_COLOR, WATER_FOG_END_DISTANCE))
+    }
+}
+
+/// `FogRenderer.computeFogColor`'s brightening of an underwater fog colour
+/// by `LocalPlayer.getWaterVision()`: each channel moves toward the colour
+/// scaled so its brightest channel is 1 (the others by `1 / clamp(max, 0.07,
+/// 1)`). A colour with a zero channel is left alone, as vanilla's.
+pub fn brighten_fog(rgb: [f32; 3], factor: f32) -> [f32; 3] {
+    let [r, g, b] = rgb;
+    if r == 0.0 || g == 0.0 || b == 0.0 {
+        return rgb;
+    }
+    let max = r.max(g.max(b));
+    let target = 1.0 / max.clamp(0.07, 1.0);
+    let target_max = 1.0 / max;
+    let ch = |c: f32| {
+        let scale = if max != c { target } else { target_max };
+        c + factor * (c * scale - c)
+    };
+    [ch(r), ch(g), ch(b)]
+}
+
+/// `LocalPlayer.getWaterVision()` from `waterVisionTime` (0 when the eye is
+/// not in water).
+pub fn water_vision(eye_in_water: bool, time: i32) -> f32 {
+    if !eye_in_water {
+        return 0.0;
+    }
+    if time >= 600 {
+        return 1.0;
+    }
+    let t = time as f32;
+    let a = (t / 100.0).clamp(0.0, 1.0);
+    let b = if t < 100.0 {
+        0.0
+    } else {
+        ((t - 100.0) / 500.0).clamp(0.0, 1.0)
+    };
+    a * 0.6 + b * 0.39999998
+}
+
 /// `LinearCongruentialGenerator.next(rval, c)`:
 /// `rval *= rval * MULTIPLIER + INCREMENT; return rval + c;` (Java `long` wrap).
 #[inline]
@@ -616,6 +741,48 @@ fn gaussian_biome_weights(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `LocalPlayer.getWaterVision`: 0 out of water, 0.6 at 100 ticks, then a
+    /// further 0.4 over the next 500, 1 from 600.
+    #[test]
+    fn water_vision_ramps_as_vanillas() {
+        assert_eq!(water_vision(false, 600), 0.0);
+        assert_eq!(water_vision(true, 0), 0.0);
+        assert!((water_vision(true, 50) - 0.3).abs() < 1e-6);
+        assert!((water_vision(true, 100) - 0.6).abs() < 1e-6);
+        assert!((water_vision(true, 350) - (0.6 + 0.5 * 0.39999998)).abs() < 1e-6);
+        assert_eq!(water_vision(true, 600), 1.0);
+    }
+
+    /// `computeFogColor`'s brighten: the default water fog `#050533` at full
+    /// water vision scales so blue reaches 1 and the others by the same
+    /// `1 / 0.2`; at 0 it is unchanged.
+    #[test]
+    fn underwater_fog_brightens_toward_its_brightest_channel() {
+        let c = [5.0 / 255.0, 5.0 / 255.0, 51.0 / 255.0];
+        assert_eq!(brighten_fog(c, 0.0), c);
+        let b = brighten_fog(c, 1.0);
+        assert!((b[2] - 1.0).abs() < 1e-6);
+        assert!((b[0] - 5.0 / 51.0).abs() < 1e-6);
+        // A black channel leaves the colour alone.
+        assert_eq!(brighten_fog([0.0, 0.5, 0.5], 1.0), [0.0, 0.5, 0.5]);
+        // The default end with a swamp's 0.85 multiplier.
+        let reg = BiomeRegistry {
+            water_fog: vec![WaterFogAttrs {
+                color: Some(0xFF23_2317_u32 as i32),
+                end: FloatModifier::Multiply(0.85),
+            }],
+            ..BiomeRegistry::new(Vec::new())
+        };
+        assert_eq!(
+            reg.water_fog_value(0),
+            (0xFF23_2317_u32 as i32, 96.0 * 0.85)
+        );
+        assert_eq!(
+            reg.water_fog_value(1),
+            (WATER_FOG_COLOR, WATER_FOG_END_DISTANCE)
+        );
+    }
 
     fn single_biome(def: BiomeDef) -> BiomeContext {
         BiomeContext::new(

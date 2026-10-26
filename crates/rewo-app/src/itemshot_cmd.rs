@@ -646,16 +646,25 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         format!("diamond_helmet → {helmet:?} (no TRIM component, so no case matches)"),
     );
     // The fail-closed half: a property Rewo cannot evaluate must still
-    // suppress. A clock branches on which dimension you are in, which a baked
-    // model has no way to know.
-    let clock = jar_json(jar, "assets/minecraft/items/clock.json")
-        .map(|d| resolve_definition(&d, &mut |_| None, SelectionContext::gui()));
+    // suppress. Since the needle items (compass, clock) evaluate, the one
+    // jar subtree left is a lodestone compass's needle: `CompassAngle` with
+    // `target: lodestone` needs the stack's `lodestone_tracker`. It is the
+    // `on_true` arm of compass.json's `has_component` condition, resolved as
+    // a definition of its own because a plain stack never reaches it.
+    let lodestone = jar_json(jar, "assets/minecraft/items/compass.json").and_then(|d| {
+        let arm = d.get("model")?.get("on_true")?.clone();
+        Some(resolve_definition(
+            &serde_json::json!({ "model": arm }),
+            &mut |_| None,
+            SelectionContext::gui(),
+        ))
+    });
     c.record(
         "a8.an_unevaluable_property_still_suppresses",
-        matches!(&clock, Some(ItemModel::Unsupported(k))
-            if k == "minecraft:select (minecraft:context_dimension)"),
+        matches!(&lodestone, Some(ItemModel::Unsupported(k))
+            if k == "minecraft:range_dispatch (minecraft:compass)"),
         format!(
-            "clock → {clock:?} — the reason names the property, not just the type,              so a bucket says what could not be answered"
+            "lodestone compass needle → {lodestone:?} — the reason names the property, not just the type, so a bucket says what could not be answered"
         ),
     );
     // And the context half: a spear selects *different geometry* per display
@@ -713,12 +722,18 @@ fn check_resolution(c: &mut Checker, jar: &std::path::Path, baked: &assets::Bake
         .filter(|(i, r)| !baked_apart(i, r))
         .map(|(i, r)| format!("{i}#{r}"))
         .collect();
+    // Counted per item: the compass and clock needle frames are baked as
+    // variants too, so the total is not this witness's number.
+    let use_items = ["minecraft:bow", "minecraft:crossbow", "minecraft:goat_horn"];
+    let use_variant_count = use_items
+        .iter()
+        .map(|i| variants.variants_of(i))
+        .sum::<usize>();
     c.record(
         "a10.every_use_variant_of_the_bow_crossbow_and_goat_horn_is_baked",
-        missing.is_empty() && variants.variant_count() == wanted.len(),
+        missing.is_empty() && use_variant_count == wanted.len(),
         format!(
-            "{} variant(s) baked; missing or identical to the plain model: {missing:?}",
-            variants.variant_count()
+            "{use_variant_count} variant(s) baked for the bow, crossbow and horn; missing or identical to the plain model: {missing:?}"
         ),
     );
     // And the reduction picks them where vanilla does. The tick counts are

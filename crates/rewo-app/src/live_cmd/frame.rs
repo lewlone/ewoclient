@@ -966,6 +966,8 @@ impl LiveApp {
                     }
                     None => [1.0e9, 1.0e9 + 1.0],
                 };
+                // M402 — under water the water environment's band replaces it.
+                let band = water_fog(session).map_or(band, |w| [w.start, w.end]);
                 // r3: the sentinel the dead branch produced is 1e9 blocks out.
                 // Counting a *finite* band rather than "we took the Some arm"
                 // is what makes this a value witness — the arm could be taken
@@ -3255,6 +3257,7 @@ impl LiveApp {
             );
             apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
             apply_render_distance_fog(&mut state.world_renderer, session);
+            apply_water_fog(&mut state.world_renderer, session);
             if self.particles.is_none() {
                 self.particles = ParticleAssets::new(baked);
             }

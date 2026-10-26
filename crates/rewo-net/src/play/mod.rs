@@ -1128,6 +1128,9 @@ pub struct PlaySession {
     /// `ClientLevel.animateTick`'s randoms (the level's and the thread-local
     /// one, folded into one stream: only the distribution is vanilla's).
     animate_rng: rewo_world::biome_noise::LegacyRandom,
+    /// `LocalPlayer.waterVisionTime` (0..=600): up one a tick while the eye
+    /// is in water (ten for a spectator), down ten a tick out of it.
+    water_vision_time: i32,
     /// The local player's `moveDist` / `nextStep` / crystal chime state.
     step_tracker: rewo_world::step_sound::StepTracker,
     /// The local player's own `Entity.random` (step chimes, swim pitch). Like
@@ -2107,6 +2110,7 @@ impl<'a> Connection<'a> {
             animate_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_A417),
             step_tracker: Default::default(),
             pending_place: None,
+            water_vision_time: 0,
             player_rng: rewo_world::biome_noise::LegacyRandom::new(0x5EED_57E9),
             entity_push: Vec::new(),
             warden_type_id: None,
@@ -3411,6 +3415,16 @@ impl PlaySession {
         self.prev_rider_keys = *input;
         if self.spawned {
             self.animate_tick_sounds();
+            // `LocalPlayer.aiStep`'s water-vision clock.
+            let spectator = self
+                .game_state
+                .game_mode()
+                .is_some_and(|m| m.is_spectator());
+            self.water_vision_time = if self.player.eye_in_water {
+                (self.water_vision_time + if spectator { 10 } else { 1 }).clamp(0, 600)
+            } else {
+                (self.water_vision_time - 10).clamp(0, 600)
+            };
         }
         self.ticks += 1;
         Ok(())
@@ -4938,6 +4952,11 @@ impl PlaySession {
     /// the fallback for a session that was never told one.
     pub fn local_game_mode(&self) -> Option<GameMode> {
         resolve_local_game_mode(self.game_state.game_mode(), self.own_game_mode())
+    }
+
+    /// `LocalPlayer.getWaterVision()`.
+    pub fn water_vision(&self) -> f32 {
+        rewo_world::biome::water_vision(self.player.eye_in_water, self.water_vision_time)
     }
 
     /// The local player's own attribute snapshots (M73).

@@ -581,7 +581,10 @@ pub(super) fn run_headless(
             let w = effective_weather(&session);
             (w.rain_level(), w.thunder_level())
         },
-        rain_fog_band(&session, &mut weather_assets, None),
+        // M402 — under water the water environment's band replaces it.
+        water_fog(&session).map_or(rain_fog_band(&session, &mut weather_assets, None), |w| {
+            [w.start, w.end]
+        }),
     );
     apply_biome_sky_fog(&mut world_renderer, &session);
     // M33: the sun and moon fade out as rain comes in
@@ -600,6 +603,7 @@ pub(super) fn run_headless(
     );
     apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
     apply_render_distance_fog(&mut world_renderer, &session);
+    apply_water_fog(&mut world_renderer, &session);
     // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
     // a PNG can show it without a windowed session and a keypress. The cursor
     // is parked at the window centre, which is where `set_screen_open` puts it.

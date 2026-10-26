@@ -361,6 +361,35 @@ pub fn attribute_music_volume(attributes: Option<&Nbt>) -> Option<f32> {
     Some((f as f32).clamp(0.0, 1.0))
 }
 
+/// A biome's `visual/water_fog_color` (bare override) and
+/// `visual/water_fog_end_distance` (bare override or `{modifier, argument}`;
+/// `add` / `multiply` are the forms vanilla's biomes use, others inherit).
+pub fn attribute_water_fog(attributes: Option<&Nbt>) -> rewo_world::biome::WaterFogAttrs {
+    use rewo_world::biome::{FloatModifier, WaterFogAttrs};
+    let Some(attrs) = attributes else {
+        return WaterFogAttrs::default();
+    };
+    let color = attrs
+        .get("minecraft:visual/water_fog_color")
+        .and_then(parse_attr_color);
+    let end = match attrs.get("minecraft:visual/water_fog_end_distance") {
+        Some(Nbt::Compound(_)) => {
+            let n = attrs.get("minecraft:visual/water_fog_end_distance");
+            let arg = n.and_then(|n| n.get("argument")).and_then(as_f32);
+            let modifier = n.and_then(|n| n.get("modifier")).and_then(Nbt::as_str);
+            match (modifier, arg) {
+                (Some("multiply"), Some(a)) => FloatModifier::Multiply(a),
+                (Some("add"), Some(a)) => FloatModifier::Add(a),
+                (Some("override"), Some(a)) => FloatModifier::Override(a),
+                _ => FloatModifier::Inherit,
+            }
+        }
+        Some(n) => as_f32(n).map_or(FloatModifier::Inherit, FloatModifier::Override),
+        None => FloatModifier::Inherit,
+    };
+    WaterFogAttrs { color, end }
+}
+
 pub fn attribute_sky_fog(attributes: Option<&Nbt>) -> (Option<i32>, Option<i32>) {
     let Some(attrs) = attributes else {
         return (None, None);
@@ -416,6 +445,29 @@ mod tests {
         assert_eq!(def.grass_override, None);
         assert_eq!(def.sky_color, Some(0xFF78A7FFu32 as i32));
         assert_eq!(def.fog_color, None);
+    }
+
+    #[test]
+    fn water_fog_attributes_take_both_forms() {
+        use rewo_world::biome::FloatModifier;
+        // swamp.json: `"minecraft:visual/water_fog_color": "#232317"` and the
+        // end distance as `{argument: 0.85, modifier: "multiply"}`.
+        let attrs = Nbt::Compound(vec![
+            ("minecraft:visual/water_fog_color".into(), s("#232317")),
+            (
+                "minecraft:visual/water_fog_end_distance".into(),
+                Nbt::Compound(vec![
+                    ("argument".into(), Nbt::Float(0.85)),
+                    ("modifier".into(), s("multiply")),
+                ]),
+            ),
+        ]);
+        let w = attribute_water_fog(Some(&attrs));
+        assert_eq!(w.color, Some(0xFF232317u32 as i32));
+        assert_eq!(w.end, FloatModifier::Multiply(0.85));
+        assert_eq!(w.end.apply(96.0), 96.0 * 0.85);
+        let none = attribute_water_fog(None);
+        assert_eq!((none.color, none.end), (None, FloatModifier::Inherit));
     }
 
     #[test]

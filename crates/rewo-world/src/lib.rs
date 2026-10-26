@@ -760,6 +760,13 @@ impl World {
         Some(ctx.camera_sky(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
     }
 
+    /// Camera water fog (colour, end distance) at the eye, or `None` without
+    /// a biome context.
+    pub fn camera_water_fog(&self, eye: [f64; 3]) -> Option<(i32, f32)> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.camera_water_fog(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
+    }
+
     /// Camera `visual/fog_color` at the eye (opaque ARGB), or `None`.
     pub fn camera_fog(&self, eye: [f64; 3]) -> Option<i32> {
         let ctx = self.biome.as_ref()?;
