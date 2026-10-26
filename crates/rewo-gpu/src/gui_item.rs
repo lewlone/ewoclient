@@ -442,7 +442,16 @@ pub struct GuiItemPass {
     /// `set_vertices` runs before the frame is submitted — see `buf_ring`'s
     /// module docs (M86).
     vbuf: BufRing,
+    /// The end of the item vertices: the glint's vertices start here.
     vert_count: u32,
+    /// How many of the leading item vertices are the UNDER set: the hotbar's
+    /// icons beneath an open screen, which are drawn before the screen's dim
+    /// wash and so by their own call ([`Self::draw_under`]). Zero outside a
+    /// screen, and then [`Self::draw`] is every item.
+    under_count: u32,
+    /// How many glint vertices follow the items for the under set; the
+    /// screen's own follow those.
+    glint_under: u32,
 }
 
 impl GuiItemPass {
@@ -550,6 +559,8 @@ impl GuiItemPass {
             allocs: vec![alloc],
             vbuf: BufRing::new(),
             vert_count: 0,
+            under_count: 0,
+            glint_under: 0,
             glint: None,
             glint_verts: 0,
         })
@@ -557,6 +568,8 @@ impl GuiItemPass {
 
     pub fn set_vertices(&mut self, gpu: &mut Gpu, verts: &[GuiItemVertex]) -> Result<(), String> {
         self.vert_count = verts.len() as u32;
+        self.under_count = 0;
+        self.glint_under = 0;
         self.vbuf.set(
             gpu,
             bytemuck::cast_slice(verts),
@@ -681,9 +694,56 @@ impl GuiItemPass {
         Ok(())
     }
 
+    /// Two icon sets in one upload: the `under` set (the hotbar beneath an
+    /// open screen) and the screen's own, each with its glint. The buffer is
+    /// `under | screen | under glint | screen glint`.
+    pub fn set_vertices_split(
+        &mut self,
+        gpu: &mut Gpu,
+        under: &[GuiItemVertex],
+        verts: &[GuiItemVertex],
+        glint_under: &[GuiItemVertex],
+        glint: &[GuiItemVertex],
+    ) -> Result<(), String> {
+        let mut all =
+            Vec::with_capacity(under.len() + verts.len() + glint_under.len() + glint.len());
+        all.extend_from_slice(under);
+        all.extend_from_slice(verts);
+        all.extend_from_slice(glint_under);
+        all.extend_from_slice(glint);
+        self.set_vertices(gpu, &all)?;
+        self.vert_count = (under.len() + verts.len()) as u32;
+        self.under_count = under.len() as u32;
+        self.glint_under = glint_under.len() as u32;
+        self.glint_verts = glint.len() as u32;
+        Ok(())
+    }
+
     /// The glint, over the icons it belongs to.
     pub fn draw_glint(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
-        if self.glint_verts == 0 {
+        self.draw_glint_range(
+            gpu,
+            cb,
+            extent,
+            self.vert_count + self.glint_under,
+            self.glint_verts,
+        );
+    }
+
+    /// The under set's glint.
+    pub fn draw_glint_under(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        self.draw_glint_range(gpu, cb, extent, self.vert_count, self.glint_under);
+    }
+
+    fn draw_glint_range(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        first: u32,
+        count: u32,
+    ) {
+        if count == 0 {
             return;
         }
         let (Some(parts), Some(vbuf)) = (self.glint.as_ref(), self.vbuf.bind()) else {
@@ -719,12 +779,35 @@ impl GuiItemPass {
                 bytemuck::bytes_of(&push),
             );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, self.glint_verts, 1, self.vert_count, 0);
+            device.cmd_draw(cb, count, 1, first, 0);
         }
     }
 
+    /// The screen's icons (or every icon, when there is no under set).
     pub fn draw(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
-        if self.vert_count == 0 {
+        self.draw_range(
+            gpu,
+            cb,
+            extent,
+            self.under_count,
+            self.vert_count - self.under_count,
+        );
+    }
+
+    /// The under set: the hotbar's icons beneath an open screen.
+    pub fn draw_under(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
+        self.draw_range(gpu, cb, extent, 0, self.under_count);
+    }
+
+    fn draw_range(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        first: u32,
+        count: u32,
+    ) {
+        if count == 0 {
             return;
         }
         let Some(vbuf) = self.vbuf.bind() else {
@@ -761,7 +844,7 @@ impl GuiItemPass {
                 bytemuck::bytes_of(&push),
             );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
-            device.cmd_draw(cb, self.vert_count, 1, 0, 0);
+            device.cmd_draw(cb, count, 1, first, 0);
         }
     }
 

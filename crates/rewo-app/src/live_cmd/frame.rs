@@ -723,6 +723,10 @@ impl LiveApp {
         // The inventory preview draws the local player from its own atlas, so
         // it takes the pixels rather than the world pass's upload.
         if let Some(own) = self.skins.take_own_preview() {
+            // ...and the first-person arm wears the same sheet.
+            if let (Some(h), Some(skin)) = (self.hand.as_mut(), own.skin.as_ref()) {
+                h.set_skin(skin.clone());
+            }
             self.preview_skin = Some(own);
         }
 
@@ -3223,6 +3227,20 @@ impl LiveApp {
                             |id: i32| item_props(&items, id, None).map_or(64, |p| p.max_stack);
                         merchant_view(&mut self.screen, m, offers, &props)
                     });
+                // Vanilla draws the HUD under a container screen and the
+                // screen's dim wash over it, so the hotbar's icons stay
+                // visible, dimmed. They ride the item pass as its under set
+                // (drawn with the HUD, before the wash); their counts are
+                // labels, which the text pass draws over the wash, so they
+                // are handed the colour the wash would leave.
+                let hotbar_labels = if layers.hotbar_and_decorations {
+                    let hb = hotbar_icons(session, &items, gi, (sw, sh));
+                    let counts = hotbar_count_labels(&hb.stacks, rewo_gpu::hud::gui_scale(sw, sh));
+                    gi.under = hb.icons;
+                    dimmed_hotbar_labels(counts, sh)
+                } else {
+                    Vec::new()
+                };
                 let (labels, velvet) = apply_screen(
                     &mut state.world_renderer,
                     &mut state.gpu,
@@ -3275,7 +3293,8 @@ impl LiveApp {
                         c.book_page_label_frames += 1;
                     }
                 }
-                self.screen_labels = labels;
+                self.screen_labels = hotbar_labels;
+                self.screen_labels.extend(labels);
                 // M94 — OUTSIDE the `container_panel_height` guard below: the
                 // player's own inventory has no container panel and is the
                 // commonest screen with a book, so counting inside that guard
@@ -3427,7 +3446,14 @@ impl LiveApp {
                 c.hand_frames += 1;
             }
             let items = self.items.clone();
-            let h = self.hand.get_or_insert_with(|| HandState::new(baked));
+            let own_skin = self.preview_skin.as_ref().and_then(|p| p.skin.clone());
+            let h = self.hand.get_or_insert_with(|| {
+                let mut h = HandState::new(baked);
+                if let Some(skin) = own_skin {
+                    h.set_skin(skin);
+                }
+                h
+            });
             h.tick(session, &items);
             // M284 — and while asleep (`renderItemInHand`'s
             // `!isSleeping`): the camera lies in the bed.

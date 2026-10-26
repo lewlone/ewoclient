@@ -889,6 +889,12 @@ pub struct ContainerPass {
     bar_range: (u32, u32),
     set_layout: vk::DescriptorSetLayout,
     pipeline: vk::Pipeline,
+    /// The same pass for the UNORM view: what [`Self::draw_backdrop`] uses to
+    /// blend the dim wash in gamma space.
+    gamma_pipeline: Option<vk::Pipeline>,
+    /// How many vertices the screen backdrop's quad takes at the head of the
+    /// buffer (0 while no screen is open).
+    backdrop_verts: u32,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     sampler: vk::Sampler,
@@ -1093,7 +1099,13 @@ impl ContainerPass {
                 )
                 .map_err(|e| format!("container layout: {e}"))?
         };
-        let pipeline = build_pipeline(&device, layout, color_format)?;
+        let pipeline = build_pipeline(&device, layout, color_format, false)?;
+        // The backdrop's own pipeline against the UNORM twin; `None` when the
+        // target has none, and the backdrop then blends in linear light.
+        let gamma_pipeline = match crate::world::unorm_of(color_format) {
+            Some(unorm) => Some(build_pipeline(&device, layout, unorm, true)?),
+            None => None,
+        };
 
         let ring = crate::buf_ring::BufRing::with_capacity(
             gpu,
@@ -1105,6 +1117,7 @@ impl ContainerPass {
             layout,
             set_layout,
             pipeline,
+            gamma_pipeline,
             pool,
             set,
             sampler,
@@ -1113,6 +1126,7 @@ impl ContainerPass {
             view,
             ring,
             back_verts: 0,
+            backdrop_verts: 0,
             total_verts: 0,
             panel,
             highlight_back,
@@ -1177,6 +1191,7 @@ impl ContainerPass {
             gui_origin_placed(w, h, Placement::with_book(gui_w, gui_h, book_open));
         let mut v: Vec<Vertex> = Vec::with_capacity(192);
         let quad = push_quad;
+        self.backdrop_verts = 0;
 
         // 1. The backdrop, over everything the world drew.
         if open {
@@ -1190,6 +1205,7 @@ impl ContainerPass {
                 BACKDROP_TOP,
                 BACKDROP_BOTTOM,
             );
+            self.backdrop_verts = v.len() as u32;
             // 2. The panel. One quad for the player's inventory; for a
             //    container, whatever its screen's blits are — two for a chest,
             //    which takes a band from the top of `generic_54.png` and
@@ -1577,8 +1593,42 @@ impl ContainerPass {
         self.menu_sheets.len()
     }
 
+    /// The screen's dim wash, `Screen.renderTransparentBackground`.
+    ///
+    /// **Vanilla blends it in gamma space**: `0xC0101010` over a mid-tone
+    /// world is `dst * 0.25 + 0x10 * 0.75` in the encoded bytes, while the
+    /// sRGB attachment blends the same colours in linear light and leaves a
+    /// bright sky about twice as bright. So with a UNORM twin (`gamma`) it
+    /// draws through [`Self::gamma_pipeline`], which the caller runs inside
+    /// `in_gamma_space`; without one it falls back to the linear pipeline.
+    pub fn draw_backdrop(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        gamma: bool,
+    ) {
+        let pipeline = match (gamma, self.gamma_pipeline) {
+            (true, Some(p)) => p,
+            _ => self.pipeline,
+        };
+        self.draw_range_with(gpu, cb, extent, 0, self.backdrop_verts, pipeline);
+    }
+
+    /// Whether [`Self::draw_backdrop`] has a gamma-space pipeline to use.
+    pub fn has_gamma_backdrop(&self) -> bool {
+        self.gamma_pipeline.is_some()
+    }
+
+    /// The panel and the back highlight, after the backdrop.
     pub fn draw_back(&self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
-        self.draw_range(gpu, cb, extent, 0, self.back_verts);
+        self.draw_range(
+            gpu,
+            cb,
+            extent,
+            self.backdrop_verts,
+            self.back_verts - self.backdrop_verts,
+        );
     }
 
     /// The front highlight, over the icons.
@@ -1611,6 +1661,18 @@ impl ContainerPass {
         first: u32,
         count: u32,
     ) {
+        self.draw_range_with(gpu, cb, extent, first, count, self.pipeline);
+    }
+
+    fn draw_range_with(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        extent: vk::Extent2D,
+        first: u32,
+        count: u32,
+        pipeline: vk::Pipeline,
+    ) {
         // Never read past what this frame actually uploaded.
         let uploaded = (self.ring.len() / VERTEX_STRIDE) as u32;
         let count = count.min(uploaded.saturating_sub(first));
@@ -1622,7 +1684,7 @@ impl ContainerPass {
         };
         let device = &gpu.device;
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             let viewport = vk::Viewport::default()
                 .width(extent.width as f32)
                 .height(extent.height as f32)
@@ -1656,6 +1718,9 @@ impl ContainerPass {
         let device = gpu.device.clone();
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
+            if let Some(p) = self.gamma_pipeline.take() {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -1669,10 +1734,14 @@ impl ContainerPass {
     }
 }
 
+/// `gamma` builds the variant whose fragment output is sRGB-encoded, for a
+/// colour attachment that is the UNORM twin of the frame's image (see
+/// [`ContainerPass::draw_backdrop`]); `color_format` must then be that twin.
 pub(crate) fn build_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    gamma: bool,
 ) -> Result<vk::Pipeline, String> {
     unsafe {
         let vert = crate::overlay::create_shader(
@@ -1681,7 +1750,11 @@ pub(crate) fn build_pipeline(
         )?;
         let frag = crate::overlay::create_shader(
             device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/container.frag.spv")),
+            if gamma {
+                include_bytes!(concat!(env!("OUT_DIR"), "/container_gamma.frag.spv"))
+            } else {
+                include_bytes!(concat!(env!("OUT_DIR"), "/container.frag.spv"))
+            },
         )?;
         let entry = c"main";
         let stages = [

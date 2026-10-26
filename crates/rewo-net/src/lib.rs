@@ -423,6 +423,9 @@ pub struct Connection<'a> {
     /// file's. Moved onto the `PlaySession` at `into_play`, where the local
     /// render distance is read from it.
     pub(crate) client_info: client_info::ClientInformation,
+    /// The profile id `login_finished` carried: the player's UUID as the
+    /// server knows it, which is the only source in offline mode.
+    pub(crate) profile_uuid: Option<u128>,
 }
 
 impl<'a> Connection<'a> {
@@ -530,6 +533,7 @@ impl<'a> Connection<'a> {
             session: crate::session::SessionState::default(),
             endpoint,
             client_info: client_info::ClientInformation::default(),
+            profile_uuid: None,
         })
     }
 
@@ -631,7 +635,9 @@ impl<'a> Connection<'a> {
                     self.send(answer)?;
                 }
                 x if x == self.ids.cb_login_finished => {
-                    // GameProfile follows; we don't need it for M1.
+                    // The GameProfile follows; its id is the player's UUID
+                    // (the name and properties are not read).
+                    self.profile_uuid = login::profile_uuid(&self.packet[body..]).ok();
                     let mut ack = PacketWriter::packet(self.ids.sb_login_acknowledged);
                     let _ = &mut ack;
                     self.send(ack)?;

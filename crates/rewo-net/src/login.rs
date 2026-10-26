@@ -21,6 +21,18 @@ pub fn compression_threshold(body: &[u8]) -> Result<Option<i32>> {
     Ok((threshold >= 0).then_some(threshold))
 }
 
+/// `ClientboundLoginFinishedPacket`'s profile id: the first field of
+/// `ByteBufCodecs.GAME_PROFILE` (`UUIDUtil.STREAM_CODEC`, two longs), ahead of
+/// the name and the properties this does not read.
+///
+/// On an offline server this is the only place the player's UUID arrives (the
+/// hello sends a zero one): the server names the player
+/// `UUID.nameUUIDFromBytes("OfflinePlayer:" + name)`, and `DefaultPlayerSkin`
+/// picks the skin from it.
+pub fn profile_uuid(body: &[u8]) -> Result<u128> {
+    PacketReader::new(body).uuid()
+}
+
 /// `handleCustomQuery` (`ClientHandshakePacketListenerImpl.java:232-235`):
 /// vanilla understands no login query, so it answers every one with
 /// `new ServerboundCustomQueryAnswerPacket(transactionId, null)`: the VarInt
@@ -79,6 +91,20 @@ mod tests {
         assert_eq!(compression_threshold(&[0x00]).unwrap(), Some(0));
         assert_eq!(compression_threshold(&[0x80, 0x02]).unwrap(), Some(256));
         assert!(compression_threshold(&[]).is_err());
+    }
+
+    #[test]
+    fn the_login_finished_profile_names_the_player() {
+        // `UUID.nameUUIDFromBytes("OfflinePlayer:Puppet")`, then the name and
+        // an empty property list, as `GAME_PROFILE` writes them.
+        let id: u128 = 0x4ec89bdb_6fa0_38e0_88fd_c71ec9524c16;
+        let mut body = id.to_be_bytes().to_vec();
+        body.push(6);
+        body.extend_from_slice(b"Puppet");
+        body.push(0);
+        assert_eq!(profile_uuid(&body).unwrap(), id);
+        // Fifteen bytes are not a UUID.
+        assert!(profile_uuid(&body[..15]).is_err());
     }
 
     #[test]

@@ -271,15 +271,19 @@ pub(super) fn live_recipe_book(
                 id: e.id,
                 group: e.group,
                 category: names.category.name(e.category)?,
-                results: e.display.result().items(),
+                results: e.display.result().items_in(&session.tags),
                 // M96 — the ingredient slots, tags resolved against the
                 // server's own `update_tags` payload.
                 ingredients: e.ingredients(&session.tags),
                 // M99 — what the search indexes.
-                search: search_entry_of(&e.display.result().items(), items, display),
+                search: search_entry_of(
+                    &e.display.result().items_in(&session.tags),
+                    items,
+                    display,
+                ),
                 // M104 — the which-of-these overlay's ingredient grid.
                 shape: e.display.overlay_shape(),
-                grid_items: e.display.overlay_ingredients(),
+                grid_items: e.display.overlay_ingredients(&session.tags),
             })
         })
         .collect();
@@ -303,7 +307,19 @@ pub(super) fn live_recipe_book(
         state,
         book_mouse,
         query,
+        grid_of(layout),
     ))
+}
+
+/// `getGridWidth()` x `getGridHeight()` of the menu a book is open over: the
+/// player's own `InventoryMenu` is 2x2, a crafting table 3x3. A furnace has
+/// no grid and its selector ignores it.
+pub(crate) fn grid_of(layout: &rewo_world::menu_layout::MenuLayout) -> (usize, usize) {
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        (2, 2)
+    } else {
+        (3, 3)
+    }
 }
 
 /// The ghost recipe's two washes, split into the halves they belong in (M103).
@@ -387,6 +403,7 @@ pub(crate) fn live_ghosts(
         None => return Vec::new(),
     };
     let items = |d: &rewo_net::recipe_book::SlotDisplay| d.items();
+    let grid = grid_of(layout);
     let (menu, inputs, shape) = match display {
         D::CraftingShaped {
             width,
@@ -396,34 +413,12 @@ pub(crate) fn live_ghosts(
         } => (
             // `getGridWidth/Height` — 2x2 for the player's own inventory, 3x3
             // for a crafting table.
-            gs::crafting_menu(
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
-                    2
-                } else {
-                    3
-                },
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
-                    2
-                } else {
-                    3
-                },
-            ),
+            gs::crafting_menu(grid.0, grid.1),
             ingredients.iter().map(items).collect::<Vec<_>>(),
             Some((*width as usize, *height as usize)),
         ),
         D::CraftingShapeless { ingredients, .. } => (
-            gs::crafting_menu(
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
-                    2
-                } else {
-                    3
-                },
-                if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
-                    2
-                } else {
-                    3
-                },
-            ),
+            gs::crafting_menu(grid.0, grid.1),
             ingredients.iter().map(items).collect(),
             None,
         ),
@@ -591,30 +586,60 @@ pub(crate) fn book_render_from(
     book_mouse: Option<(i32, i32)>,
     // The search field's contents, already lowercased (M99).
     query: &str,
+    // `menu.getGridWidth()` / `getGridHeight()`: 2x2 in the player's own
+    // inventory, 3x3 at a crafting table; unread by the furnace books.
+    grid: (usize, usize),
 ) -> BookRender {
     use rewo_ui::recipe_book_screen as rb;
     let flat: Vec<(i32, Option<i32>, &str)> = entries
         .iter()
         .map(|e| (e.id, e.group, e.category))
         .collect();
-    let all = rb::collections(&flat);
     let tabs = book.tabs();
     let selected_tab = state.selected_tab.min(tabs.len() - 1);
-    // Stage one of `updateCollections` is the tab's own membership. Tab 0 is
-    // the SEARCH tab, whose categories are the book's whole set — so with the
-    // selection pinned to 0 this shows everything the book has.
-    let wanted = tabs[selected_tab].categories;
-    // `updateCollections`' stages, in order (M93z): the tab's membership, then
-    // the SEARCH, then the filter. The search stage is skipped entirely on an
-    // empty query rather than run with one — see `recipe_search::matches`.
-    let mine: Vec<_> = all
+    // `ClientRecipeBook.getCollection(selectedTab.getCategory())`: the tab's
+    // own collections, category by category in the tab's order (the search
+    // tab concatenates its `includedCategories`, it does not interleave them
+    // by recipe id).
+    let all = rb::tab_collections(&flat, tabs[selected_tab].categories);
+    let find = |id: &i32| entries.iter().find(|e| e.id == *id);
+    // `RecipeCollection.selectRecipes`: each recipe is SELECTED when the open
+    // menu can show it (`canDisplay`: a 3x3 recipe is not selected in the
+    // player's 2x2 grid) and CRAFTABLE when it is selected and the held items
+    // satisfy it. `canCraft` of an entry with no requirements is false.
+    struct Resolved {
+        id: i32,
+        craftable: bool,
+    }
+    let resolved: Vec<Vec<Resolved>> = all
         .iter()
-        .filter(|c| wanted.contains(&c.category.as_str()))
-        .filter(|c| {
+        .map(|c| {
+            c.recipes
+                .iter()
+                .filter_map(|id| {
+                    let e = find(id)?;
+                    rb::can_display(book, grid, e.shape).then(|| Resolved {
+                        id: *id,
+                        craftable: e
+                            .ingredients
+                            .as_ref()
+                            .is_some_and(|ing| held.try_pick(ing, 1)),
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    // `updateCollections`' stages, in order (M93z): `removeIf(!hasAnySelected)`
+    // (unconditional), then the SEARCH, then the filter's `!hasCraftable`.
+    // The search stage is skipped entirely on an empty query rather than run
+    // with one: see `recipe_search::matches`.
+    let kept: Vec<usize> = (0..all.len())
+        .filter(|&i| !resolved[i].is_empty())
+        .filter(|&i| {
             // A collection's searchable text is the union of its recipes',
             // which is what `flatMap` over `getRecipes()` gives.
             let mut e = rewo_ui::recipe_search::SearchEntry::default();
-            for id in &c.recipes {
+            for id in &all[i].recipes {
                 if let Some(src) = entries.iter().find(|x| x.id == *id) {
                     e.names.extend(src.search.names.iter().cloned());
                     e.ids.extend(src.search.ids.iter().cloned());
@@ -622,21 +647,26 @@ pub(crate) fn book_render_from(
             }
             rewo_ui::recipe_search::matches(&e, query)
         })
+        .filter(|&i| !filtering || resolved[i].iter().any(|r| r.craftable))
         .collect();
-    let total_pages = rb::total_pages(mine.len());
-    let page = rb::clamp_page(state.page, mine.len(), false);
-    let range = rb::page_range(page, mine.len());
-    let find = |id: &i32| entries.iter().find(|e| e.id == *id);
+    let total_pages = rb::total_pages(kept.len());
+    let page = rb::clamp_page(state.page, kept.len(), false);
+    let range = rb::page_range(page, kept.len());
     let mut slots = Vec::new();
     let mut slot_items = Vec::new();
     let mut slot_shadowed = Vec::new();
     let mut slot_recipes = Vec::new();
     let mut slot_collections = Vec::new();
-    for c in &mine[range] {
-        let per_entry: Vec<Vec<i32>> = c
-            .recipes
+    for &ci in &kept[range] {
+        let rs = &resolved[ci];
+        // `RecipeButton.init`: the cell's entries are `getSelectedRecipes(
+        // isFiltering ? CRAFTABLE : ANY)`, so a cell cycles, shadows and
+        // counts "several recipes" over those, not the collection's whole
+        // list.
+        let shown: Vec<&Resolved> = rs.iter().filter(|r| !filtering || r.craftable).collect();
+        let per_entry: Vec<Vec<i32>> = shown
             .iter()
-            .map(|id| find(id).map(|e| e.results.clone()).unwrap_or_default())
+            .map(|r| find(&r.id).map(|e| e.results.clone()).unwrap_or_default())
             .collect();
         let multiple = per_entry.len() > 1;
         // `allRecipesHaveSameResultDisplay` — every display item across every
@@ -646,32 +676,19 @@ pub(crate) fn book_render_from(
         let mut seen = per_entry.iter().flatten();
         let first = seen.next().copied();
         let same_result = seen.all(|i| Some(*i) == first);
-        // Per-recipe affordability, which the which-of-these overlay needs one
-        // by one (M104) where the cell needs only whether ANY of them is.
-        // A recipe whose `craftingRequirements` were absent is never craftable,
-        // which is `canCraft`'s own opening line rather than a default.
-        let per_recipe: Vec<bool> = c
-            .recipes
-            .iter()
-            .map(|id| {
-                find(id)
-                    .and_then(|e| e.ingredients.as_ref())
-                    .is_some_and(|ing| held.try_pick(ing, 1))
-            })
-            .collect();
         // `hasCraftable()` — ANY of them.
-        let craftable = per_recipe.iter().any(|&c| c);
+        let craftable = rs.iter().any(|r| r.craftable);
+        // The which-of-these overlay's buttons: the selected recipes, each
+        // with its own affordability (M104), in the collection's order.
         slot_collections.push(
-            c.recipes
-                .iter()
-                .zip(&per_recipe)
-                .map(|(&id, &can)| {
-                    let (shape, grid) = find(&id)
+            rs.iter()
+                .map(|r| {
+                    let (shape, grid_items) = find(&r.id)
                         .map(|e| (e.shape, e.grid_items.clone()))
                         .unwrap_or((rewo_ui::recipe_overlay::Shape::Other, Vec::new()));
                     rewo_ui::recipe_overlay::Button {
-                        recipe: id,
-                        craftable: can,
+                        recipe: r.id,
+                        craftable: r.craftable,
                         // `if (!items.isEmpty())` — an ingredient that resolves
                         // to nothing contributes no position, and because
                         // neither placement arm derives its position from a
@@ -682,7 +699,7 @@ pub(crate) fn book_render_from(
                         )
                         .into_iter()
                         .filter_map(|p| {
-                            let items = grid.get(p.ingredient).cloned().unwrap_or_default();
+                            let items = grid_items.get(p.ingredient).cloned().unwrap_or_default();
                             (!items.is_empty()).then_some((p, items))
                         })
                         .collect(),
@@ -696,13 +713,13 @@ pub(crate) fn book_render_from(
         // `getCurrentRecipe` — the entry the cycle is showing, which is what a
         // left-click places. Not the collection's first: clicking while the
         // cycle is on the second of two recipes places the SECOND.
-        let n = c.recipes.len() as i32;
+        let n = shown.len() as i32;
         slot_recipes.push(if n == 0 {
             None
         } else {
-            c.recipes
+            shown
                 .get((cycle - n * cycle.div_euclid(n)) as usize)
-                .copied()
+                .map(|r| r.id)
         });
     }
     let view = rb::BookView {

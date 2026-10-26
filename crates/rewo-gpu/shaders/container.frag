@@ -19,6 +19,15 @@ vec3 srgb_to_linear(vec3 c) {
                step(vec3(0.04045), c));
 }
 
+// For the gamma-space variant (`-DGAMMA_OUT`): the result goes to a UNORM view
+// of the attachment, where no transfer function is applied on store and the
+// fixed-function blend sees vanilla's gamma-encoded numbers.
+vec3 linear_to_srgb(vec3 c) {
+    return mix(c * 12.92,
+               1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
+               step(vec3(0.0031308), c));
+}
+
 void main() {
     // A NEGATIVE u means untextured: the quad is a solid fill of its vertex
     // colour (M93q). Vanilla draws these through a separate pipeline —
@@ -30,5 +39,9 @@ void main() {
     // The sentinel is safe because every real UV is a normalised atlas
     // coordinate in [0, 1]: no legitimate blit can produce a negative one.
     vec4 t = v_uv.x < 0.0 ? vec4(1.0) : texture(u_atlas, v_uv);
-    out_color = vec4(t.rgb * srgb_to_linear(v_color.rgb), t.a * v_color.a);
+    vec3 rgb = t.rgb * srgb_to_linear(v_color.rgb);
+#ifdef GAMMA_OUT
+    rgb = linear_to_srgb(rgb);
+#endif
+    out_color = vec4(rgb, t.a * v_color.a);
 }

@@ -796,7 +796,7 @@ impl ScreenPass {
                 )
                 .map_err(|e| format!("screen layout: {e}"))?
         };
-        let pipeline = build_pipeline(&device, layout, color_format)?;
+        let pipeline = build_pipeline(&device, layout, color_format, false)?;
 
         let ring = crate::buf_ring::BufRing::with_capacity(
             gpu,

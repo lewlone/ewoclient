@@ -516,6 +516,22 @@ impl WorldRenderer {
         }
     }
 
+    /// The screen's icons plus the hotbar's `under` set, each with its glint
+    /// (see [`crate::gui_item::GuiItemPass::set_vertices_split`]).
+    pub fn set_gui_items_split(
+        &mut self,
+        gpu: &mut Gpu,
+        under: &[crate::gui_item::GuiItemVertex],
+        verts: &[crate::gui_item::GuiItemVertex],
+        glint_under: &[crate::gui_item::GuiItemVertex],
+        glint: &[crate::gui_item::GuiItemVertex],
+    ) -> Result<(), String> {
+        match self.gui_items.as_mut() {
+            Some(p) => p.set_vertices_split(gpu, under, verts, glint_under, glint),
+            None => Ok(()),
+        }
+    }
+
     /// Build the glint's pipeline and upload `misc/enchanted_glint_item.png`.
     ///
     /// The item pass is rebuilt whenever its atlas is repacked, and this goes
@@ -699,11 +715,10 @@ impl WorldRenderer {
     /// The HUD and the inventory / container screen over it.
     fn draw_hud_and_container(&mut self, gpu: &Gpu, cb: vk::CommandBuffer, extent: vk::Extent2D) {
         // HUD, then the inventory screen over it, then text — all screen
-        // space. The item icons are one pass drawn once, so when the screen is
-        // open they belong to it rather than to the hotbar: the caller feeds
-        // `set_gui_items` the screen's 46 slot rects instead of the hotbar's
-        // nine, and this order puts them between the two highlight halves,
-        // where vanilla puts them.
+        // space. The item icons are one pass with two sets: the screen's 46
+        // slot rects, drawn between the two highlight halves where vanilla
+        // puts them, and, under an open screen, the hotbar's own nine (the
+        // `under` set), drawn with the HUD and so beneath the dim wash.
         let screen = self.gui.container_open.filter(|_| self.container.is_some());
         // The container pass owns the durability bars whether or not the
         // screen is open, because the hotbar draws them too — so its geometry
@@ -759,6 +774,25 @@ impl WorldRenderer {
             }
         }
         if let (Some(pass), Some(_)) = (self.container.as_ref(), screen) {
+            // The hotbar's icons under the screen: vanilla draws the HUD
+            // first and the screen's background over all of it, icons
+            // included. The depth the icons wrote is cleared so it cannot cut
+            // the screen's own (a tall container's hotbar row reaches the
+            // HUD's).
+            if let Some(items) = &self.gui_items {
+                items.draw_under(gpu, cb, extent);
+                self.in_gamma_space(gpu, cb, extent, || items.draw_glint_under(gpu, cb, extent));
+                clear_depth_rect(gpu, cb, vk::Rect2D::default().extent(extent));
+            }
+            // The dim wash blends in gamma space when the target has the
+            // UNORM twin (`in_gamma_space` skips its closure otherwise).
+            if pass.has_gamma_backdrop() && self.gamma.is_some() {
+                self.in_gamma_space(gpu, cb, extent, || {
+                    pass.draw_backdrop(gpu, cb, extent, true)
+                });
+            } else {
+                pass.draw_backdrop(gpu, cb, extent, false);
+            }
             pass.draw_back(gpu, cb, extent);
             // The player preview sits between the panel and the icons: it is
             // inside the window the panel paints, and an item on the cursor

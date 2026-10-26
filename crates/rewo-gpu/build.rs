@@ -105,6 +105,13 @@ fn main() {
             "sunrise_gamma.frag.spv",
             Some("-DGAMMA_OUT"),
         ),
+        // The screen backdrop: `container.frag` again, its colour encoded for
+        // a blend in the UNORM view (vanilla blends GUI fills in gamma space).
+        (
+            "shaders/container.frag",
+            "container_gamma.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
     ]) {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");

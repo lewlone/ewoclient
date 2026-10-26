@@ -791,8 +791,9 @@ pub struct PlaySession {
     /// score dispatches on — resolved by name at load, carried here because
     /// the decode cannot proceed without them.
     number_formats: rewo_data::number_formats::NumberFormatTypeIds,
-    /// The local player's UUID, so `own_ping_ms` knows which entry is ours.
-    /// Absent in offline mode until the server names us.
+    /// The local player's UUID, so `own_ping_ms` knows which entry is ours and
+    /// the default skin can be picked from it. The login's profile id, which
+    /// is the only source in offline mode.
     pub own_uuid: Option<u128>,
     pub world: World,
     pub player: PlayerState,
@@ -2109,11 +2110,11 @@ impl<'a> Connection<'a> {
             bundle,
             clock_epoch: std::time::Instant::now(),
             number_formats: self.data.number_formats,
-            // Filled from the authenticated profile when there is one. Offline
-            // mode leaves it `None`, so `own_ping_ms` reports nothing rather
-            // than guessing which tab entry is us -- a name match would pick
-            // the wrong player the moment two share a prefix.
-            own_uuid: auth.map(|a| a.uuid),
+            // The authenticated profile's, else the one `login_finished`
+            // named (an offline server derives it from the name). Never a
+            // name match: that would pick the wrong tab entry the moment two
+            // players share a prefix.
+            own_uuid: auth.map(|a| a.uuid).or(self.profile_uuid),
             enchantments,
             chat_types,
             trim_materials,
