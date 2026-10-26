@@ -4184,9 +4184,9 @@ pub fn loom_flag(
     })
 }
 
-/// The tooltip key of a pattern button: `pattern.value().translationKey() + "."
-/// + patternColor.getName()` (`LoomScreen.extractBackground`), with the vanilla
-/// registry's `translation_key` of `block.minecraft.banner.<name>`. The dye is
+/// The tooltip key of a pattern button: the pattern's `translationKey()`, a
+/// dot, then the dye's name (`LoomScreen.extractBackground`). The vanilla
+/// registry's `translation_key` is `block.minecraft.banner.<name>`. The dye is
 /// the dye slot's colour index, white when it names none.
 pub fn loom_pattern_tooltip_key(pattern: &str, dye: usize) -> String {
     let stem = pattern.strip_prefix("minecraft:").unwrap_or(pattern);
