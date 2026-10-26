@@ -181,6 +181,23 @@ pub(crate) fn preview_equipment<'a>(
     }
 }
 
+/// M418 — the preview pass's glints, from the jar's two glint sheets (the
+/// same ones the world pass takes).
+pub(crate) fn init_preview_glints(
+    wr: &mut rewo_gpu::world::WorldRenderer,
+    gpu: &mut rewo_gpu::Gpu,
+    baked: &rewo_data::assets::BakedAssets,
+) -> Result<(), String> {
+    wr.init_preview_glints(
+        gpu,
+        baked.glint.as_ref().map(|g| (g.rgba.as_slice(), g.w, g.h)),
+        baked
+            .armor_glint
+            .as_ref()
+            .map(|g| (g.rgba.as_slice(), g.w, g.h)),
+    )
+}
+
 /// The local player's armour slots as worn pieces, head first (M414).
 pub(crate) fn local_worn(
     inv: &rewo_world::inventory::Inventory,

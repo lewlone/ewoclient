@@ -943,6 +943,9 @@ pub(super) fn apply_screen(
     if !wr.preview_ready() {
         if let Err(e) = wr.init_preview(gpu, font_data(baked), entity_textures(baked)) {
             log::warn!("live: inventory preview unavailable: {e}");
+        } else if let Err(e) = super::gui::init_preview_glints(wr, gpu, baked) {
+            // M418 — a preview without its glint still draws.
+            log::warn!("live: inventory preview glint unavailable: {e}");
         }
     }
     // M220 — only `InventoryScreen` draws the player
@@ -995,7 +998,12 @@ pub(super) fn apply_screen(
             items,
             &baked.equipment,
         );
-        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse, worn);
+        let (mut draw, vp, rect) = preview_draw(session, skin_uv, slim, held, w, h, mouse, worn);
+        // M418 — `hasFoil()` of what the preview holds.
+        draw.held_glint = [
+            session.inventory.held().is_some_and(|s| s.enchanted),
+            session.inventory.offhand().is_some_and(|s| s.enchanted),
+        ];
         if let Err(e) =
             wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>())
         {

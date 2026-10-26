@@ -26,7 +26,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   vanilla's does, instead of decaying like a mob's), M416 (baby zombies,
   husks, drowned, zombie villagers and piglins wear armour and elytras),
   M417 (horses rear: the body, head and legs, with the tail, saddle and
-  chests on the body); the
+  chests on the body), M418 (enchanted armour and held items shimmer in
+  the inventory preview); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -115,7 +116,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `00f7edcc` | **M412** — entities take the terrain's fog; mobtexshot m120 |
 | `337d9ffd` | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
 | `c5c3333e` | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
-| (next) | **M417** — horses rear; mobtexshot m123 |
+| `5fdc8e9e` | **M417** — horses rear; mobtexshot m123 |
+| (next) | **M418** — the inventory preview's glints; capeshot p8 |
 
 ## Flakes
 
@@ -156,8 +158,8 @@ major bumps, so the next weekly group arrives without it.
   models are static in Rewo).
 - ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
   draws the vanilla cape).
-- ~~The inventory preview draws no armour~~: M414. Left: its trims and
-  armour glint.
+- ~~The inventory preview draws no armour~~: M414; its glints M418. Left:
+  its trims (their sprites live in the world pass's pool).
 - ~~Remote players' motion is applied directly~~: M415.
 - ~~Baby humanoids wear no armour~~: M416. Found on the way: M403's baby
   elytra was 12 px too high (fixed there too).

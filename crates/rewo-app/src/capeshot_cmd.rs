@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 75;
+const EXPECTED_WITNESSES: usize = 76;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -2014,7 +2014,9 @@ fn check_pixels(
                     crate::live_cmd::entity_textures(baked),
                 )
                 .map(|_| wr.preview_ready())
-                .unwrap_or(false);
+                .unwrap_or(false)
+            // M418 — the preview's glints, as the client installs them.
+            && crate::live_cmd::init_preview_glints(&mut wr, gpu, baked).is_ok();
         if preview_ok {
             wr.set_container(true, None);
             // The preview's **own** upload. The world pass already holds this
@@ -2209,6 +2211,39 @@ fn check_pixels(
                     ch.armor[1].is_some(),
                     ch.cape.is_some_and(|c| c.chest_humanoid),
                     p_chest != p_back
+                ),
+            );
+            // M418 — the same chestplate enchanted: the preview draws the
+            // armour foil now (it had no glint pass before).
+            let mut prev_foil = |foil: bool| -> Result<Vec<u8>, String> {
+                let mut piece = worn(f.chestplate);
+                piece.foil = foil;
+                let e = crate::live_cmd::preview_equipment(
+                    [None, Some(piece), None, None],
+                    Some(p_origin),
+                    &f.items,
+                    &f.equipment,
+                );
+                let mut d = player_draw(e.cape);
+                d.armor = e.armor;
+                wr.set_preview(Some((&d, vp_prev, rect)));
+                off.render(gpu, Some((&mut wr, vp)), &draw, CLEAR)?;
+                off.read_rgba(gpu)
+            };
+            let (p_plain, p_foil) = (prev_foil(false)?, prev_foil(true)?);
+            let shimmer = p_plain
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(p_foil.as_chunks::<4>().0)
+                .filter(|(a, b)| a[..3] != b[..3])
+                .count();
+            c.record(
+                "p8.an_enchanted_chestplate_shimmers_in_the_preview",
+                shimmer > 20,
+                format!(
+                    "{shimmer} px differ between the plain and the enchanted chestplate \
+                     (want > 20; the sheen is sparse in a window this small). Before \n                     M418 the preview had no glint pass, and 0 differed"
                 ),
             );
             // M292 — the mount screen's window: a donkey, through the

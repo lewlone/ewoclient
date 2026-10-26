@@ -456,6 +456,31 @@ impl WorldRenderer {
         Ok(())
     }
 
+    /// M418 — the preview's own glint pipelines and sheets (the item glint
+    /// and the armour glint, `(rgba, w, h)` each), as the world pass's
+    /// [`Self::init_entity_glint`] / [`Self::init_entity_armor_glint`] build
+    /// them. Without a UNORM counterpart format nothing is built, as there.
+    pub fn init_preview_glints(
+        &mut self,
+        gpu: &mut Gpu,
+        glint: Option<(&[u8], u32, u32)>,
+        armor_glint: Option<(&[u8], u32, u32)>,
+    ) -> Result<(), String> {
+        let Some(format) = unorm_of(self.color_format) else {
+            return Ok(());
+        };
+        let Some(p) = self.preview.as_mut() else {
+            return Ok(());
+        };
+        if let Some((rgba, w, h)) = glint {
+            p.init_glint(gpu, rgba, w, h, format)?;
+        }
+        if let Some((rgba, w, h)) = armor_glint {
+            p.init_armor_glint(gpu, rgba, w, h, format)?;
+        }
+        Ok(())
+    }
+
     /// This frame's preview: the model to pose, the matrix that places it, and
     /// the window it is clipped to. `None` closes it.
     pub fn set_preview(&mut self, draw: Option<(&EntityDraw<'_>, [[f32; 4]; 4], vk::Rect2D)>) {

@@ -743,6 +743,14 @@ impl WorldRenderer {
             if let (Some(preview), Some((vp, rect))) = (&self.preview, self.gui.preview_state) {
                 clear_depth_rect(gpu, cb, rect);
                 preview.draw_solid(gpu, cb, vp, extent);
+                // M418 — and its glints in the world pass's order (`frame.rs`):
+                // the armour foil (an elytra's too), then the held stacks',
+                // in gamma space as the world's and the hand's are. The
+                // preview has no trims to draw between them (M414).
+                self.in_gamma_space(gpu, cb, extent, || {
+                    preview.draw_armor_glint(gpu, cb, vp, extent);
+                    preview.draw_glint(gpu, cb, vp, extent);
+                });
             }
             if let Some(items) = &self.gui_items {
                 items.draw(gpu, cb, extent);
