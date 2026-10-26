@@ -6391,11 +6391,11 @@ mod default_skin_tests {
     }
 
     /// The playtest's offline player "Puppet": the server names it
-    /// `nameUUIDFromBytes("OfflinePlayer:Puppet")` = 4ec89bdb-6fa0-38e0-88fd-
-    /// c71ec9524c16 (worked with an independent MD5 and Java's `UUID.hashCode`
-    /// in Python), whose floorMod 18 is 17: `DEFAULT_SKINS[17]`, the wide Zuri
-    /// - which is what vanilla showed in the inventory, not the Steve Rewo
-    /// fell back to while its own UUID was unknown.
+    /// `nameUUIDFromBytes("OfflinePlayer:Puppet")`, which an independent MD5
+    /// and Java's `UUID.hashCode` (worked in Python) put at floorMod 18 = 17:
+    /// `DEFAULT_SKINS[17]`, the wide Zuri. That is what vanilla showed in the
+    /// inventory, not the Steve Rewo fell back to while its own UUID was
+    /// unknown.
     #[test]
     fn an_offline_player_wears_the_default_skin_of_its_server_assigned_uuid() {
         let id = 0x4ec89bdb_6fa0_38e0_88fd_c71ec9524c16;
