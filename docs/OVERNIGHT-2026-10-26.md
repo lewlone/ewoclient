@@ -184,7 +184,7 @@ default build. Bisecting across that range needs `--features gates`.
   with the staging correctly at ground level and the bot itself standing
   3.2 blocks above the origin during the timed witnesses. Cause still open;
   the next sighting should log the bot's position when the lectern stage
-  starts.
+  starts. Not seen again in the 7 render-check runs of M432–M437.
 - **`rewo-audio` `a_slow_read_is_not_re_requested_on_every_tick`**: failed
   once in M432's full workspace run ("the stream was opened and its first
   pump requested"), passed five of five alone. It gives the decode worker
@@ -204,7 +204,6 @@ default build. Bisecting across that range needs `--features gates`.
   pick aimed at no entity). If r81 recurs, check the crosshair pick's
   own-vehicle rule against `ProjectileUtil.getEntityHitResult`'s
   root-vehicle case.
-- **r329 class**: not seen in the 7 render-check runs of M432–M437.
 
 ## Dependabot PR #6
 
