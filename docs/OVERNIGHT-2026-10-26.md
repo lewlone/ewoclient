@@ -156,7 +156,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
 | `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
 | `174b195b` | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
-| (next) | **M438** — the previews take vanilla's `ENTITY_IN_UI` lights; capeshot p10 |
+| `fda4f957` | **M438** — the previews take vanilla's `ENTITY_IN_UI` lights; capeshot p10 |
 
 ## A broken default build, fixed
 
