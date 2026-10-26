@@ -61,8 +61,6 @@ pub struct ConfigData {
     pub movement_effect_ids: MovementEffectIds,
     /// `minecraft:worldgen/biome` registry in raw wire order (M14).
     pub biome_defs: Vec<rewo_world::biome::BiomeDef>,
-    /// Each biome's water-fog attributes, beside [`Self::biome_defs`].
-    pub biome_water_fog: Vec<rewo_world::biome::WaterFogAttrs>,
     pub enchantments: Vec<crate::enchantment_parse::EnchantmentDef>,
     pub chat_types: Vec<crate::chat_type_parse::ChatTypeDef>,
     pub trim_materials: Vec<crate::trim_parse::TrimMaterialDef>,
@@ -107,7 +105,6 @@ impl ConfigData {
                 levitation: data.mob_effects.id_of("minecraft:levitation"),
             },
             biome_defs: Vec::new(),
-            biome_water_fog: Vec::new(),
             enchantments: Vec::new(),
             chat_types: Vec::new(),
             trim_materials: Vec::new(),
@@ -142,7 +139,6 @@ impl ConfigData {
             swing_effect_ids,
             movement_effect_ids,
             biome_defs: Vec::new(),
-            biome_water_fog: Vec::new(),
             enchantments: Vec::new(),
             chat_types: Vec::new(),
             trim_materials: Vec::new(),
@@ -164,9 +160,9 @@ impl ConfigData {
         if self.biome_defs.is_empty() {
             None
         } else {
-            let mut reg = rewo_world::biome::BiomeRegistry::new(self.biome_defs.clone());
-            reg.water_fog = self.biome_water_fog.clone();
-            Some(reg)
+            Some(rewo_world::biome::BiomeRegistry::new(
+                self.biome_defs.clone(),
+            ))
         }
     }
 
@@ -312,7 +308,6 @@ impl ConfigData {
         let is_biome = registry == "minecraft:worldgen/biome";
         if is_biome {
             self.biome_defs.clear();
-            self.biome_water_fog.clear();
         }
         for idx in 0..count {
             let entry_name = match r.identifier() {
@@ -386,7 +381,6 @@ impl ConfigData {
                     // with a neutral default so indices still line up.
                     self.biome_defs
                         .push(crate::biome_parse::parse_biome(&entry_name, &Nbt::End));
-                    self.biome_water_fog.push(Default::default());
                 }
                 continue;
             }
@@ -403,10 +397,6 @@ impl ConfigData {
             if is_biome {
                 self.biome_defs
                     .push(crate::biome_parse::parse_biome(&entry_name, &nbt));
-                self.biome_water_fog
-                    .push(crate::biome_parse::attribute_water_fog(
-                        nbt.get("attributes"),
-                    ));
             }
             if is_damage_type {
                 // `effects` defaults to `hurt` (`DamageType.CODEC`).

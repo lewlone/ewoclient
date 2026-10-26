@@ -442,55 +442,6 @@ pub(super) fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession)
     }
 }
 
-/// `WaterFogEnvironment` for a camera in water (M402): the band, the sky's
-/// fog end, and the fog colour.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct WaterFog {
-    pub start: f32,
-    pub end: f32,
-    /// Linear RGB for the GPU.
-    pub color: [f32; 3],
-}
-
-/// The frame's [`WaterFog`], or `None` when the eye is not in water (vanilla's
-/// `getFluidInCamera`; Rewo's camera is the eye) or there is no biome context.
-///
-/// `WaterFogEnvironment.setupFog`: start and end from the attributes, the end
-/// times `max(0.25, getWaterVision())`, and `skyEnd = cloudEnd = end`.
-/// `FogRenderer.computeFogColor`: the attribute colour, brightened by the
-/// water vision ([`rewo_world::biome::brighten_fog`]); the void darkening is
-/// 0 above `minY + 32`, and Rewo has no `darkenWorldAmount` (boss fog).
-pub(super) fn water_fog(session: &PlaySession) -> Option<WaterFog> {
-    if !session.player.eye_in_water {
-        return None;
-    }
-    let (argb, end) = session.world.camera_water_fog(eye_f64(session))?;
-    let vision = session.water_vision();
-    let srgb = [
-        ((argb >> 16) & 255) as f32 / 255.0,
-        ((argb >> 8) & 255) as f32 / 255.0,
-        (argb & 255) as f32 / 255.0,
-    ];
-    let [r, g, b] = rewo_world::biome::brighten_fog(srgb, vision);
-    let lin = |c: f32| srgb_to_linear(c.clamp(0.0, 1.0));
-    Some(WaterFog {
-        start: rewo_world::biome::WATER_FOG_START_DISTANCE,
-        end: end * vision.max(0.25),
-        color: [lin(r), lin(g), lin(b)],
-    })
-}
-
-/// Apply [`water_fog`]'s sky end and colour (after the render-distance fog,
-/// which sets the sky end every frame). The fog and sky take the water colour
-/// with no day-timeline tint: `WATER_FOG_COLOR` has no timeline track.
-pub(super) fn apply_water_fog(wr: &mut WorldRenderer, session: &PlaySession) {
-    if let Some(w) = water_fog(session) {
-        wr.set_sky_disc(w.end, false);
-        wr.set_sky_fog_base(w.color, w.color);
-        wr.set_sky_tint([1.0; 3], [1.0; 3]);
-    }
-}
-
 /// Opaque ARGB int (biome sky/fog color, sRGB) → linear RGB the GPU sky base
 /// wants (the SRGB attachment re-encodes on store).
 pub(super) fn argb_to_linear(argb: i32) -> [f32; 3] {
