@@ -4111,3 +4111,163 @@ mod label_tests {
         assert_eq!(at(&l, LabelText::PlayerInventory), Some((8, 72)));
     }
 }
+
+// -- the loom's banner preview ------------------------------------------------
+
+/// `LoomScreen.extractBackground`'s `graphics.bannerPattern(flag, baseColor,
+/// patterns, x0, y0, x0 + 20, y0 + 40)` at `x0 = leftPos + 141`,
+/// `y0 = topPos + 8`: the flag drawn into a 20x40 box.
+pub const LOOM_FLAG_X: i32 = 141;
+pub const LOOM_FLAG_Y: i32 = 8;
+pub const LOOM_FLAG_W: i32 = 20;
+pub const LOOM_FLAG_H: i32 = 40;
+
+/// The flag's front face in a 64x64 banner texture: the 20x40x1 cuboid at
+/// `texOffs(0, 0)` shows its front at (1, 1).
+pub const LOOM_FLAG_SRC: (i32, i32) = (1, 1);
+
+/// The banner the loom previews: the result slot's colour and the layer the
+/// pattern slot is about to add.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoomFlag {
+    /// The result banner's `BannerItem.getColor()`, as an index into
+    /// `block_entity_models::DYE_COLORS`.
+    pub base: usize,
+    /// The selected pattern and the dye slot's colour: the layer the result
+    /// stack gains. `None` when the selection names no pattern.
+    pub layer: Option<(&'static str, usize)>,
+    /// Whether the input banner already carries layers. They are on the
+    /// result's `banner_patterns` too, but no decoded form of them reaches
+    /// the screen yet, so a `true` here is a preview missing those layers.
+    pub prior_layers: bool,
+}
+
+/// The `DyeColor` index of an item named `minecraft:<colour>_<suffix>`
+/// (`_dye`, `_banner`), or `None` for any other name.
+pub fn dye_index_of(item_name: &str, suffix: &str) -> Option<usize> {
+    let stem = item_name
+        .strip_prefix("minecraft:")
+        .unwrap_or(item_name)
+        .strip_suffix(suffix)?;
+    rewo_data::block_entity_models::DYE_COLORS
+        .iter()
+        .position(|c| *c == stem)
+}
+
+/// What `LoomScreen` previews, or `None` when it draws no flag
+/// (`resultBannerPatterns == null || hasMaxPatterns`).
+///
+/// `result` and `dye` are the item names in the result and dye slots,
+/// `selected` the data slot's pattern index into `patterns`. A dye slot that
+/// names no dye reads as white, `getOrDefault(DYE, WHITE)`.
+pub fn loom_flag(
+    result: Option<&str>,
+    dye: Option<&str>,
+    selected: i32,
+    patterns: &[&'static str],
+    has_max: bool,
+    prior_layers: bool,
+) -> Option<LoomFlag> {
+    if has_max {
+        return None;
+    }
+    let base = dye_index_of(result?, "_banner")?;
+    let colour = dye.and_then(|d| dye_index_of(d, "_dye")).unwrap_or(0);
+    let layer = usize::try_from(selected)
+        .ok()
+        .and_then(|i| patterns.get(i))
+        .map(|p| (*p, colour));
+    Some(LoomFlag {
+        base,
+        layer,
+        prior_layers,
+    })
+}
+
+/// The flag's destination and source in the panel: the same blit for every
+/// layer, only the sprite and tint change.
+pub fn loom_flag_blit() -> ProgressBlit {
+    ProgressBlit {
+        dx: LOOM_FLAG_X,
+        dy: LOOM_FLAG_Y,
+        w: LOOM_FLAG_W,
+        h: LOOM_FLAG_H,
+        sx: LOOM_FLAG_SRC.0,
+        sy: LOOM_FLAG_SRC.1,
+        src: None,
+    }
+}
+
+#[cfg(test)]
+mod loom_flag_tests {
+    use super::*;
+
+    #[test]
+    fn colours_come_from_the_item_names() {
+        assert_eq!(dye_index_of("minecraft:white_banner", "_banner"), Some(0));
+        assert_eq!(dye_index_of("minecraft:red_dye", "_dye"), Some(14));
+        assert_eq!(
+            dye_index_of("minecraft:light_gray_banner", "_banner"),
+            Some(8)
+        );
+        assert_eq!(dye_index_of("minecraft:red_dye", "_banner"), None);
+        assert_eq!(dye_index_of("minecraft:shield", "_banner"), None);
+    }
+
+    #[test]
+    fn the_flag_needs_a_result_banner_and_no_overfull_banner() {
+        let pats = ["minecraft:border", "minecraft:flower"];
+        let f = loom_flag(
+            Some("minecraft:white_banner"),
+            Some("minecraft:red_dye"),
+            1,
+            &pats,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(f.base, 0);
+        assert_eq!(f.layer, Some(("minecraft:flower", 14)));
+        assert!(
+            loom_flag(None, Some("minecraft:red_dye"), 1, &pats, false, false).is_none(),
+            "an empty result slot previews nothing"
+        );
+        assert!(
+            loom_flag(
+                Some("minecraft:white_banner"),
+                Some("minecraft:red_dye"),
+                1,
+                &pats,
+                true,
+                false
+            )
+            .is_none(),
+            "hasMaxPatterns draws the error sprite instead"
+        );
+    }
+
+    #[test]
+    fn a_selection_outside_the_list_adds_no_layer() {
+        let pats = ["minecraft:border"];
+        for selected in [-1, 1, 99] {
+            let f = loom_flag(
+                Some("minecraft:blue_banner"),
+                Some("minecraft:red_dye"),
+                selected,
+                &pats,
+                false,
+                false,
+            )
+            .unwrap();
+            assert_eq!((f.base, f.layer), (11, None), "selected {selected}");
+        }
+    }
+
+    #[test]
+    fn the_flag_box_is_the_decompiled_one() {
+        // x0 = leftPos + 141, y0 = topPos + 8, to (x0 + 20, y0 + 40).
+        let b = loom_flag_blit();
+        assert_eq!((b.dx, b.dy, b.w, b.h), (141, 8, 20, 40));
+        assert_eq!(b.source_size(), (20, 40));
+    }
+}

@@ -315,6 +315,8 @@ pub struct LoomView {
     /// `hasMaxPatterns` (M200): the banner already has six layers, so the
     /// grid is hidden and `ERROR_SPRITE` covers the result slot.
     pub has_max: bool,
+    /// The big banner preview (`resultBannerPatterns != null && !hasMaxPatterns`).
+    pub flag: Option<rewo_ui::menu_screen::LoomFlag>,
 }
 
 /// The loom's grid for the shown menu, or `None` when it is not a loom.
@@ -336,8 +338,22 @@ pub(crate) fn loom_view(
     let name = |slot: usize| m.menu.menu_slot(slot).and_then(|s| items.name(s.item_id));
     let patterns = rewo_data::loom_pattern_table::selectable_patterns(name(2));
     let has_max = loom_has_max_patterns(m, details);
+    let prior_layers = m
+        .menu
+        .menu_slot(0)
+        .and_then(|s| details.get(s.components))
+        .and_then(|d| d.banner_layers)
+        .is_some_and(|n| n > 0);
     Some(LoomView {
         has_max,
+        flag: rewo_ui::menu_screen::loom_flag(
+            name(3),
+            name(1),
+            m.loom_selected_pattern(),
+            patterns,
+            has_max,
+            prior_layers,
+        ),
         patterns,
         start_row: scroll.1,
         scroll_offs: scroll.0,
@@ -1560,6 +1576,26 @@ pub(super) fn menu_overlays(
                     a::LOOM_ERROR,
                     to_blit(rewo_ui::menu_screen::loom_error_blit()),
                 ));
+            }
+            // `bannerPattern(flag, baseColor, resultBannerPatterns, ..)`, right
+            // after the error sprite's `else if`: the cloth's base mask in the
+            // result's colour, then the layer the pattern slot adds in the dye's.
+            if let Some(f) = l.flag {
+                let tinted = |sprite: usize, dye: usize| {
+                    let rgb = rewo_data::block_entity_models::DYE_DIFFUSE_COLORS[dye];
+                    let c = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
+                    let mut b = to_blit(rewo_ui::menu_screen::loom_flag_blit());
+                    b.tint = [c(16), c(8), c(0), 1.0];
+                    (sprite, b)
+                };
+                if let Some(base) = a::banner_pattern_overlay("base") {
+                    out.push(tinted(base, f.base));
+                }
+                if let Some((pattern, dye)) = f.layer {
+                    if let Some(sprite) = a::banner_pattern_overlay(pattern) {
+                        out.push(tinted(sprite, dye));
+                    }
+                }
             }
             if !l.display {
                 return out;
