@@ -124,6 +124,9 @@ pub enum Anim {
     /// M359 — the tail: `xRot` its π/6 rest + speed · 0.75, `y` + speed,
     /// `z` + 2 · speed (× the age scale, 1 for the adults that use it).
     EquineTail,
+    /// M417 — the equine body, `xRot` `standing · −π/4` (rearing); the
+    /// tail, the saddle and a donkey's chests hang from it.
+    EquineBody,
     /// M365 — `TurtleModel.setupAnim` on top of `QuadrupedModel`'s: each
     /// flipper keeps the quadruped's `xRot` swing; on land the flippers
     /// sweep (`yRot`: front ∓cos(pos·5·lay)·8·speed·layAmp, hind
@@ -910,6 +913,9 @@ pub struct MobCombat {
     pub wolf_tail: Option<f32>,
     /// M355 — the wolf is angry (no wag).
     pub wolf_angry: bool,
+    /// M417 — `AbstractHorse.getStandAnim(partialTicks)`: 0 standing, 1
+    /// fully reared (`EquineRenderState.standAnimation`).
+    pub stand_anim: f32,
     /// M356 — `TamableAnimal.isInSittingPose()` (the wolf's sitting pose).
     pub sitting: bool,
     /// M356 — `LivingEntity.getAgeScale()`: 0.5 for a baby, else 1; the
@@ -11518,20 +11524,27 @@ fn equine_head_part(b: &mut ModelBuilder) -> usize {
     )
 }
 
-/// `createSaddleLayer`'s boxes: the saddle on the static part with the
-/// body's fold, the bridle on the head group (M359: a part, which looks).
+/// M417 — `AbstractEquineModel`'s `body` (pivot (0, 11, 5)), created second
+/// in every equine builder, after [`equine_head_part`], for the same reason:
+/// the saddle's builder shares its part index.
+fn equine_body_part(b: &mut ModelBuilder) -> usize {
+    b.part([0.0, 11.0, 5.0], Anim::EquineBody, 1.0)
+}
+
+/// `createSaddleLayer`'s boxes: the saddle on the body (M417: a part,
+/// which rears), the bridle on the head group (M359: a part, which looks).
 fn saddle_boxes(b: &mut ModelBuilder) {
     let neck = equine_head_part(b);
-    let body = Fold::at([0.0, 11.0, 5.0]);
+    let body = equine_body_part(b);
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (26.0, 0.0),
         [-5.0, -8.0, -9.0],
         [10.0, 9.0, 9.0],
         0.5,
         false,
-        &[body],
+        NONE,
     );
     for x in [2.0, -3.0] {
         b.cube_f(
@@ -11578,16 +11591,17 @@ fn equine_with(donkey_ears: bool, g: f32) -> Model {
     // M359 — the head group is a part, created first (see
     // [`equine_head_part`]).
     let neck = equine_head_part(&mut b);
-    let body = Fold::at([0.0, 11.0, 5.0]);
+    // M417 — the body is a part (it rears); its pivot is the fold it was.
+    let body = equine_body_part(&mut b);
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (0.0, 32.0),
         [-5.0, -8.0, -17.0],
         [10.0, 10.0, 22.0],
         0.05,
         false,
-        &[body],
+        NONE,
     );
     b.cube_f(
         neck,
@@ -11714,14 +11728,14 @@ fn equine_with(donkey_ears: bool, g: f32) -> Model {
         let p = b.part(pivot, anim, 1.0);
         b.cube_f(p, 0, (48.0, 21.0), min, [4.0, 11.0, 4.0], g, mirror, NONE);
     }
-    // M359 — the tail is a part: it lifts with the walk speed. Its pivot
-    // is the body's (0, 11, 5) plus its own (0, −5, 2).
+    // M359 — the tail is a part: it lifts with the walk speed. M417 — a
+    // child of the body, at its own (0, −5, 2).
     let tail = b.part_ext(
-        [0.0, 6.0, 7.0],
+        [0.0, -5.0, 2.0],
         [PI / 6.0, 0.0, 0.0],
         Anim::EquineTail,
         1.0,
-        Option::None,
+        Some(body),
     );
     b.cube_f(
         tail,
@@ -11736,8 +11750,9 @@ fn equine_with(donkey_ears: bool, g: f32) -> Model {
     // M296 — `DonkeyModel.modifyMesh`'s chests: `texOffs(26, 21)
     // .addBox(-4, 0, -2, 8, 8, 3)` on the body at `(6, -8, 0)` turned `-π/2`
     // (left) and `(-6, -8, 0)` turned `π/2` (right), shown with `hasChest`.
+    // M417 — on the body.
     if donkey_ears {
-        let chest = b.part([0.0, 0.0, 0.0], Anim::None, 1.0);
+        let chest = b.part_ext([0.0; 3], [0.0; 3], Anim::None, 1.0, Some(body));
         b.show(chest, Show::Chested);
         for (x, yaw) in [(6.0, -PI / 2.0), (-6.0, PI / 2.0)] {
             b.cube_f(
@@ -11748,7 +11763,7 @@ fn equine_with(donkey_ears: bool, g: f32) -> Model {
                 [8.0, 8.0, 3.0],
                 0.0,
                 false,
-                &[Fold::rot([0.0, yaw, 0.0], [x, -8.0, 0.0]), body],
+                &[Fold::rot([0.0, yaw, 0.0], [x, -8.0, 0.0])],
             );
         }
     }
@@ -15721,6 +15736,42 @@ mod horse_armor_tests {
 
     /// M294 — `HORSE_ARMOR` is the horse at 0.1 (the body still 0.05): the
     /// same parts and UVs, and the legs' boxes 0.2 wider.
+    /// M417 — the body is a part, second in every equine builder (so the
+    /// saddle's boxes, from their own builder, name it by index), and the
+    /// tail, the saddle and a donkey's chests hang from it.
+    #[test]
+    fn the_equine_body_carries_its_tail_saddle_and_chests() {
+        let donkey = equine(true);
+        let body = donkey
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::EquineBody)
+            .unwrap();
+        assert_eq!(body, 2);
+        assert_eq!(donkey.parts[body].pivot, [0.0, 11.0, 5.0]);
+        let tail = donkey
+            .parts
+            .iter()
+            .find(|p| p.anim == Anim::EquineTail)
+            .unwrap();
+        assert_eq!(
+            (tail.parent, tail.pivot),
+            (Some(body as u16), [0.0, -5.0, 2.0])
+        );
+        let chest = donkey
+            .parts
+            .iter()
+            .find(|p| p.show == Show::Chested)
+            .unwrap();
+        assert_eq!(chest.parent, Some(body as u16));
+        let (saddle, _) = equine_saddle(false, HORSE_SCALE);
+        let plain = equine(false);
+        // The saddle box (texOffs 26, 0) is on the body part.
+        assert!(saddle.quads[plain.quads.len()..]
+            .iter()
+            .any(|q| q.part == body && q.uv.iter().any(|u| u[0] >= 26.0 && u[1] <= 9.0)));
+    }
+
     #[test]
     fn the_horse_armour_is_the_horse_inflated_a_tenth() {
         let (base, shell) = (horse(), horse_armor());

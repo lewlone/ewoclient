@@ -6186,25 +6186,41 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
                 off = [0.0, 9.0 * s, -2.0 * s];
             }
         }
-        // M359 — `AbstractEquineModel.setupAnim` (standing, not eating or
-        // rearing: Rewo draws neither).
+        // M359 — `AbstractEquineModel.setupAnim` (not eating: Rewo draws
+        // none). M417 — rearing (`standing`, the adults' constants; the
+        // babies are static): the head group tips back to π/12 over the
+        // look and moves `(0, −8, +8)·standing` (`animateHeadPartsPlacement`:
+        // `y += lerp(s, 0, −8)`, `z = lerp(s, z, −4)` from its −12), the
+        // body rears −π/4, the front legs rise 12 and come forward 4 and
+        // paw at `−π/3 ± cos(age·0.6 + π)`, the hind legs brace at π/12;
+        // each walk term fades by `1 − standing`.
         EquineHead => {
+            let s = c.mob.stand_anim;
             rot[0] = c.pitch
                 + if c.amt > 0.2 {
                     (c.pos * 0.8).cos() * 0.15 * c.amt
                 } else {
                     0.0
-                };
+                }
+                - s * PI / 12.0;
             rot[1] = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
+            off = [0.0, -8.0 * s, 8.0 * s];
         }
+        EquineBody => rot[0] = c.mob.stand_anim * -PI / 4.0,
         EquineLeg { hind, left } => {
+            let s = c.mob.stand_anim;
+            let walk = 1.0 - s;
             let leg = (c.f + PI).cos();
+            let bob = (c.age * 0.6 + PI).cos();
             rot[0] = match (hind, left) {
-                (false, true) => leg * 0.8 * c.amt,
-                (false, false) => -leg * 0.8 * c.amt,
-                (true, true) => -leg * 0.5 * c.amt,
-                (true, false) => leg * 0.5 * c.amt,
+                (false, true) => (-PI / 3.0 + bob) * s + leg * 0.8 * c.amt * walk,
+                (false, false) => (-PI / 3.0 - bob) * s - leg * 0.8 * c.amt * walk,
+                (true, true) => PI / 12.0 * s - leg * 0.5 * c.amt * walk,
+                (true, false) => PI / 12.0 * s + leg * 0.5 * c.amt * walk,
             };
+            if !hind {
+                off = [0.0, -12.0 * s, 4.0 * s];
+            }
         }
         EquineTail => {
             rot[0] = c.amt * 0.75;

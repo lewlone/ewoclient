@@ -105,7 +105,13 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 122;
+const EXPECTED_WITNESSES: usize = 123;
+/// M417 — m123's floors: how many pixel rows a fully reared horse's top
+/// rises over a standing one's, seen from the side, and how far its saddle's
+/// centroid rises with the body. Before M417 the body never moved (0 rows
+/// by construction for the saddle; the top rose only with the head).
+const REAR_TOP_MIN: usize = 8;
+const REAR_SADDLE_MIN: f32 = 4.0;
 /// M416 — m121's floor: the pixels a full baby iron set adds to a baby
 /// zombie seen from the front. Before M416 a baby wore no armour (0 by
 /// construction).
@@ -7503,6 +7509,76 @@ fn run_check(
         format!(
             "{} pig px (want >= {FOG_PIG_MIN}); past the band {full_ok} are the fog colour {want:?}; inside it {part_mixed} are a mix (want >= 90%)",
             pig.len()
+        ),
+    ));
+
+    // m123 — M417: a horse rearing (`standAnimation` 1) against standing,
+    // from the side: its top rises, and the saddle, on the body, rises with
+    // it.
+    let mut rhst = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(6.0, 1.4, 0.0),
+        Vec3::new(0.0, 1.2, 0.0),
+    )?;
+    let mut rhshot = |stand: f32, saddled: bool| -> Result<Vec<u8>, String> {
+        let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+        layers[0] = Some((SADDLE, [1.0, 1.0, 1.0]));
+        let d = EntityDraw {
+            saddle: saddled.then_some(rewo_gpu::entities::ArmorPiece {
+                layers,
+                ..Default::default()
+            }),
+            mob: rewo_gpu::mobs::MobCombat {
+                stand_anim: stand,
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::Horse)
+        };
+        rhst.wr.set_entities(&[d], rhst.right, rhst.up, 0.0);
+        rhst.off
+            .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
+        rhst.off.read_rgba(gpu)
+    };
+    let (rh_stand, rh_rear) = (rhshot(0.0, false)?, rhshot(1.0, false)?);
+    let (rh_stand_s, rh_rear_s) = (rhshot(0.0, true)?, rhshot(1.0, true)?);
+    rhst.wr.set_entities(&[], rhst.right, rhst.up, 0.0);
+    rhst.off
+        .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
+    let rh_empty = rhst.off.read_rgba(gpu)?;
+    rhst.destroy(gpu);
+    if let Some(d) = &args.out_dir {
+        save_png(&rh_stand_s, cw, ch, &d.join("m123_horse_standing.png"))?;
+        save_png(&rh_rear_s, cw, ch, &d.join("m123_horse_rearing.png"))?;
+    }
+    let changed = |a: &[u8], b: &[u8]| -> Vec<usize> {
+        a.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<4>().0)
+            .enumerate()
+            .filter(|(_, (p, q))| p[..3] != q[..3])
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let top = |f: &[u8]| {
+        changed(f, &rh_empty)
+            .first()
+            .map_or(usize::MAX, |i| i / cw as usize)
+    };
+    let rows_up = top(&rh_stand).saturating_sub(top(&rh_rear));
+    let centroid = |a: &[u8], b: &[u8]| {
+        let px = changed(a, b);
+        px.iter().map(|i| (i / cw as usize) as f32).sum::<f32>() / px.len().max(1) as f32
+    };
+    let saddle_up = centroid(&rh_stand_s, &rh_stand) - centroid(&rh_rear_s, &rh_rear);
+    w.push(wit(
+        "m123.a_rearing_horse_rises_and_its_saddle_with_its_body",
+        rows_up >= REAR_TOP_MIN && saddle_up >= REAR_SADDLE_MIN,
+        format!(
+            "its top rises {rows_up} rows (want >= {REAR_TOP_MIN}); the saddle's centroid {saddle_up:.1} rows (want >= {REAR_SADDLE_MIN})"
         ),
     ));
 

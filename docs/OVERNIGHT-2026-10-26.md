@@ -24,8 +24,9 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   the vanilla one on a tilted body), M414 (the inventory preview wears
   your armour and elytra), M415 (remote players' motion eases in as
   vanilla's does, instead of decaying like a mob's), M416 (baby zombies,
-  husks, drowned, zombie villagers and piglins wear armour and elytras);
-  the
+  husks, drowned, zombie villagers and piglins wear armour and elytras),
+  M417 (horses rear: the body, head and legs, with the tail, saddle and
+  chests on the body); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -113,7 +114,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `3523cbfe` | **M411** — the cursor draws a carried stack's own copy |
 | `00f7edcc` | **M412** — entities take the terrain's fog; mobtexshot m120 |
 | `337d9ffd` | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
-| (next) | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
+| `c5c3333e` | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
+| (next) | **M417** — horses rear; mobtexshot m123 |
 
 ## Flakes
 
@@ -149,11 +151,9 @@ major bumps, so the next weekly group arrives without it.
 
 ## Follow-ups found, not done
 
-- The horse family's **rearing pose** (`AbstractEquineModel.setupAnim`'s
-  `standAnimation` terms: the body up −π/4, the head and front legs lifted,
-  the hind legs braced; the babies' own overrides). M404 models the seat;
-  the model needs the body turned into a part with the tail, chests, saddle
-  and armour shells hanging from it.
+- ~~The horse family's rearing pose~~: M417 (adults). Left: eating
+  (`eatAnimation`) and the baby horses' and donkeys' animation (their
+  models are static in Rewo).
 - ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
   draws the vanilla cape).
 - ~~The inventory preview draws no armour~~: M414. Left: its trims and
