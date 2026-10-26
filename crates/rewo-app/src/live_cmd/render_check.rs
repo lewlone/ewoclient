@@ -5497,14 +5497,23 @@ impl LiveApp {
             }
             60 => {
                 cmd(self, "gamemode creative");
-                // M424 — r230, last of the tail: a water source at the bot's
-                // head, so its eyes (1.62 up, under the source's 8/9) are
-                // under water for the frames that follow.
-                cmd(self, "setblock ~ ~1 ~ minecraft:water");
+                // M424 — r230, last of the tail: back on the ground at the
+                // staging origin (the boost stage leaves the bot in the air),
+                // then a water source at its head, so its eyes (1.62 up,
+                // under the source's 8/9) are under water.
+                if let Some(o) = self.precmd_origin {
+                    cmd(self, &format!("tp @s {} {} {}", o[0], o[1], o[2]));
+                }
                 self.use_tick0 = now;
                 self.use_stage = 61;
             }
             61 if now >= self.use_tick0 + 10 => {
+                cmd(self, "setblock ~ ~1 ~ minecraft:water");
+                self.use_tick0 = now;
+                self.use_stage = 62;
+            }
+            // r230's window: the frames are counted only here.
+            62 if now >= self.use_tick0 + 15 => {
                 self.use_stage = 100;
             }
             _ => {}

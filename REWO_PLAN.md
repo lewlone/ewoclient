@@ -4024,7 +4024,7 @@ the current open list; read a §15 gap claim as history, not as status.***
 
 ### M424 — a live witness for the water's fog (2026-10-26)
 
-M422 shipped with unit tests only: no render-check stage put the bot under water. The use tail's last stage now sets a water source at the bot's head (`setblock ~ ~1 ~ water`, after every other tail witness has staged and read, so the flowing water disturbs nothing), and `apply_fog_environment` returns its fog type and plan so the frame can count, under the gates feature, the frames that drew the water's band and colour. **Render check r230** (at least one such frame, with the water vision risen above 0).
+M422 shipped with unit tests only: no render-check stage put the bot under water. The use tail's last stages put the bot back on the ground at the staging origin (the boost stage leaves it in the air: the first draft placed the water while it fell 25 blocks), then set a water source at its head (`setblock ~ ~1 ~ water`, after every other tail witness has staged and read, so the flowing water disturbs nothing), and count, under the gates feature and only in the 15 ticks that follow, the frames whose fog environment drew the water's band and colour (`apply_fog_environment` returns its fog type and plan). **Render check r230** (233 frames, the water vision risen to 0.084: 14 ticks with the eyes under).
 
 ### M423 — the first-person hand takes the world's fog (2026-10-26)
 

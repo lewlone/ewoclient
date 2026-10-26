@@ -130,7 +130,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `45994330` | **M421** — fog bands follow `linear_fog_value`; lightmapshot 9(e) |
 | `fad13c31` | **M422** — the fog environments (water, lava, powder snow, blindness, darkness); unit tests |
 | `6ff40fb0` | **M423** — the first-person hand takes the world's fog; handshot g8 |
-| (next) | **M424** — a live witness for the water's fog; render check r230 |
+| `773dbce8` | **M424** — a live witness for the water's fog; render check r230 |
 
 ## Flakes
 
