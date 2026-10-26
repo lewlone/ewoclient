@@ -145,7 +145,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `f4cb1932` | **M430** — the hand's glint fades in the fog; handshot g9 |
 | `022d78ce` | **M431** — the inventory preview's armour trims; capeshot p9 |
 | `958f37ae` | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
-| (next) | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
+| `5c6277b7` | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
 
 ## A broken default build, fixed
 
