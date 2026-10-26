@@ -3873,7 +3873,8 @@ fn worn_head<'a>(
     head_skins: Option<&'a HeadSkins>,
 ) -> Option<rewo_gpu::entities::WornHead<'a>> {
     let (y_offset, skull_y_offset, horizontal_scale) = custom_head_transforms(entity)?;
-    let item = items.name(session.world.entities.armor(id)[0]?.item)?;
+    let piece = session.world.entities.armor(id)[0]?;
+    let item = items.name(piece.item)?;
     let Some(base) = rewo_data::chest_states::skull_model(item) else {
         if rewo_data::item_props_table::equip_asset(item).is_some() {
             return None;
@@ -3884,6 +3885,8 @@ fn worn_head<'a>(
             y_offset,
             skull_y_offset,
             horizontal_scale,
+            // M420 — the stack's foil (decoded at the wire, M50).
+            foil: piece.foil,
         });
     };
     let skinned = session
@@ -3898,6 +3901,7 @@ fn worn_head<'a>(
         y_offset,
         skull_y_offset,
         horizontal_scale,
+        foil: false,
     })
 }
 

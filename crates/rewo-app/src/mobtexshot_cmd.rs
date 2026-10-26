@@ -105,7 +105,7 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 124;
+const EXPECTED_WITNESSES: usize = 125;
 /// M417 — m123's floors: how many pixel rows a fully reared horse's top
 /// rises over a standing one's, seen from the side, and how far its saddle's
 /// centroid rises with the body. Before M417 the body never moved (0 rows
@@ -1561,6 +1561,10 @@ fn run_check(
     const TRIDENT: &str = "minecraft:trident";
     const TRIDENT_GROUND: &str = "minecraft:trident#ground";
     st.wr.prepare_held_items(gpu, &[TRIDENT, TRIDENT_GROUND])?;
+    // M420 — m125's foil needs the entity glint, installed as the client does.
+    if let Some(g) = baked.glint.as_ref() {
+        st.wr.init_entity_glint(gpu, &g.rgba, g.w, g.h)?;
+    }
     let mut shot = |d: EntityDraw<'_>| -> Result<Vec<u8>, String> {
         st.wr.set_entities(&[d], st.right, st.up, 0.0);
         st.off.render(gpu, Some((&mut st.wr, st.vp)), &ov, BG)?;
@@ -1596,6 +1600,7 @@ fn run_check(
             y_offset: 0.0,
             skull_y_offset: 0.0,
             horizontal_scale: 1.0,
+            foil: false,
         }),
         ..neutral_draw(EntityModelKind::ArmorStand)
     })?;
@@ -1619,9 +1624,35 @@ fn run_check(
             y_offset: 0.0,
             skull_y_offset: 0.0,
             horizontal_scale: 1.0,
+            foil: false,
         }),
         ..neutral_draw(EntityModelKind::ArmorStand)
     })?;
+    // m125 — M420: the same pumpkin from a foil stack: `headItem.submit`
+    // draws its glint, so the frame gains the sheen.
+    let pumpkin_foil = shot(EntityDraw {
+        worn_head: Some(rewo_gpu::entities::WornHead {
+            model: PUMPKIN,
+            item: true,
+            y_offset: 0.0,
+            skull_y_offset: 0.0,
+            horizontal_scale: 1.0,
+            foil: true,
+        }),
+        ..neutral_draw(EntityModelKind::ArmorStand)
+    })?;
+    let sheen = pumpkin
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(pumpkin_foil.as_chunks::<4>().0)
+        .filter(|(a, b)| a[..3] != b[..3])
+        .count();
+    w.push(wit(
+        "m125.an_enchanted_worn_pumpkin_shimmers",
+        sheen > 50,
+        format!("{sheen} px differ between the plain and the foil pumpkin (want > 50); before M420 a worn item drew no glint"),
+    ));
     // m20 — M281: the stand burning. The flames are the two frames' texels
     // drawn at full light (the gate's light is `[1, 1, 1]`, block light 15
     // changes nothing here): every pixel they add must be one their textures

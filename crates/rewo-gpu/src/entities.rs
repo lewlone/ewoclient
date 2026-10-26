@@ -228,6 +228,9 @@ pub struct WornHead<'a> {
     pub skull_y_offset: f32,
     /// `Transforms.horizontalScale` (the piglin's 1.0019531).
     pub horizontal_scale: f32,
+    /// M420 — the item branch's stack `hasFoil()`: `headItem.submit` draws
+    /// its glint like any item's (the skull branch submits none).
+    pub foil: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -3168,10 +3171,13 @@ impl EntityPass {
         xf: &[([[f32; 3]; 3], [f32; 3])],
         frame: &EntityFrame,
         hurt: f32,
+        // M420 — the item glint, for a foil stack worn as an item.
+        glint: Option<&mut GlintSink<'_>>,
     ) {
         let Some(w) = d.worn_head else {
             return;
         };
+        let mut glint = glint.filter(|_| w.item && w.foil);
         let Some(skull) = self.held_items.as_ref().and_then(|h| h.any(w.model)) else {
             return;
         };
@@ -3232,6 +3238,10 @@ impl EntityPass {
                     color: [shade, shade, shade, 1.0],
                     light_hurt: [light_r, light_g, light_b, hurt],
                 });
+                // Same position, same moment — see [`GlintSink`].
+                if let Some(g) = glint.as_deref_mut() {
+                    g.push(p4[i], q.uv[i]);
+                }
             }
         }
     }
@@ -4245,6 +4255,7 @@ impl EntityPass {
             &xf,
             &frame,
             overlay_value(d.hurt, d.white_overlay),
+            glint.as_deref_mut(),
         );
         // M22: whatever each arm holds, drawn after the body —
         // `ItemInHandLayer` is a render layer, so it sits on top of the

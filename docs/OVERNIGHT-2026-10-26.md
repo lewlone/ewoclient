@@ -28,7 +28,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   M417 (horses rear: the body, head and legs, with the tail, saddle and
   chests on the body), M418 (enchanted armour and held items shimmer in
   the inventory preview), M419 (dropped and framed tridents, spyglasses
-  and spears show their flat sprite, as vanilla's do); the
+  and spears show their flat sprite, as vanilla's do), M420 (an enchanted
+  item worn on the head shimmers); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -119,7 +120,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `c5c3333e` | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
 | `5fdc8e9e` | **M417** — horses rear; mobtexshot m123 |
 | `6286f464` | **M418** — the inventory preview's glints; capeshot p8 |
-| (next) | **M419** — dropped and framed tridents, spyglasses and spears are sprites; itemframeshot b6, p12, mobtexshot m124 |
+| `294fadb5` | **M419** — dropped and framed tridents, spyglasses and spears are sprites; itemframeshot b6, p12, mobtexshot m124 |
+| (next) | **M420** — an enchanted worn head item shimmers; mobtexshot m125 |
 
 ## Flakes
 
