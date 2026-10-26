@@ -213,9 +213,15 @@ struct SceneFrame {
     /// [`DEFAULT_FOG`] (plains) until the live app supplies the camera biome
     /// color. The sky disc = `sky_base *
     /// sky_tint`; fog (terrain fade, sky-disc fog and the uncovered sky) =
-    /// `fog_base * fog_tint` (M209).
+    /// `fog_base * fog_tint` (M209). M434 — the multiply runs on the encoded
+    /// numbers ([`WorldRenderer::sky_color`]).
     sky_base: [f32; 3],
     fog_base: [f32; 3],
+    /// M434 — this frame's finished fog colour (linear), when the app
+    /// resolved one (`getBaseColor` and the fog environments); `None` draws
+    /// `fog_base · fog_tint`. Its own slot, so the base and tint the next
+    /// frame reads stay the frame's inputs.
+    fog_final: Option<[f32; 3]>,
     /// Distance-fog band [start, end] (env `REWO_FOG=start,end`).
     fog: [f32; 2],
     /// `FogSkyEnd` for the sky disc, blocks (M209, [`Self::set_sky_disc`]).

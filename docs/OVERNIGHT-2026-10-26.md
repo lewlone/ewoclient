@@ -40,7 +40,9 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   the fog), M431 (the inventory preview wears your armour's trims), M432
   (terrain, water, the hand and particles shade in vanilla's colour space:
   Rewo's frame was 10-30% too bright, landed from `claude/rewo-srgb-terrain`),
-  M433 (mobs, block entities and dropped items too, and dyed armour); the
+  M433 (mobs, block entities and dropped items too, and dyed armour), M434
+  (the sky: midnight was 6x too bright, noon's fog colour lacked vanilla's
+  lean toward the sky, the sun had no halo); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -146,6 +148,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `022d78ce` | **M431** — the inventory preview's armour trims; capeshot p9 |
 | `958f37ae` | **M432** — terrain, water, hand and particles shade in sRGB space (from `c92d8dcc`); lightmapshot re-derived, demo hash `51c791c78cd6d0ea` |
 | `5c6277b7` | **M433** — entities shade in sRGB space; mobtexshot, hurtshot, lightmapshot, mobshot dye oracles re-derived |
+| (next) | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
 
 ## A broken default build, fixed
 
@@ -219,9 +222,8 @@ major bumps, so the next weekly group arrives without it.
   each face from two fixed world directions (an axis-aligned face: top 1.0,
   bottom 0.4, north/south 0.74, east/west 0.50), so a mob's sides shade by
   which way it faces. After M433 the zombie's shirt reads 134 against 129.
-- **The sky reads too light** (noted on `c92d8dcc`; measured by M432's
-  playtest, vanilla / Rewo): noon 176 205 255 / 192 216 255, midnight
-  9 11 17 / 54 62 85. The terrain beside it matches to 1-3. Not touched.
+- ~~The sky reads too light~~: M434 (noon and midnight now byte-exact
+  against vanilla on the harness).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
   entity's outline is vanilla's behaviour (`energySwirl` and `breezeWind`
   set no outline property), not a gap.

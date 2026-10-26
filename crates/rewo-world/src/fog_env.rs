@@ -406,6 +406,61 @@ pub fn plan(
     }
 }
 
+/// M434 — `AtmosphericFogEnvironment.getBaseColor`, on bytes as vanilla's
+/// is: the fog colour (`fog`, the biome's through the day's multiply) leaned
+/// toward the sunrise colour by how squarely the camera faces the sun (from
+/// render distance 4), then toward the sky colour (`sky`, weather-darkened)
+/// by `1 − clampedLerp(min(skyFogEnd / 16, rd) / 32, 0.25, 1)^0.25` — 21% at
+/// render distance 6, 13% at 12. Both lerps are `ARGB.srgbLerp`
+/// (`Mth.lerpInt`: floor). Colours are sRGB floats; `forward` is the camera's
+/// look vector, `sun_angle` the `SUN_ANGLE` attribute in radians,
+/// `sky_fog_end` the `SKY_FOG_END_DISTANCE` attribute in blocks. Before M434
+/// Rewo's atmospheric fog was the bare fog colour.
+pub fn atmospheric_base_color(
+    fog: [f32; 3],
+    sky: [f32; 3],
+    sunrise_argb: i32,
+    sun_angle: f32,
+    forward: [f64; 3],
+    render_distance: i32,
+    sky_fog_end: f32,
+) -> [f32; 3] {
+    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let lerp_int = |t: f32, a: i32, b: i32| a + (t * (b - a) as f32).floor() as i32;
+    let mut fog = fog.map(byte);
+    if render_distance >= 4 {
+        let sun_x = if crate::lightmap::mth_sin(sun_angle) > 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let facing = forward[0] as f32 * sun_x;
+        if facing > 0.0 {
+            let alpha = ((sunrise_argb >> 24) & 0xFF) as f32 / 255.0;
+            if alpha > 0.0 {
+                let c = [
+                    (sunrise_argb >> 16) & 0xFF,
+                    (sunrise_argb >> 8) & 0xFF,
+                    sunrise_argb & 0xFF,
+                ];
+                fog = std::array::from_fn(|i| lerp_int(facing * alpha, fog[i], c[i]));
+            }
+        }
+    }
+    let end = (sky_fog_end / 16.0).min(render_distance as f32);
+    let f = end / 32.0;
+    let clamped = if f < 0.0 {
+        0.25
+    } else if f > 1.0 {
+        1.0
+    } else {
+        lerp(f, 0.25, 1.0)
+    };
+    let mix = 1.0 - clamped.powf(0.25);
+    let sky = sky.map(byte);
+    std::array::from_fn(|i| lerp_int(mix, fog[i], sky[i]) as f32 / 255.0)
+}
+
 /// The ARGB colour as `ARGB.red/green/blueFloat`.
 pub fn argb_floats(c: i32) -> [f32; 3] {
     [
@@ -770,5 +825,60 @@ mod tests {
             FloatModifier::Multiply(0.85).apply(WATER_FOG_END),
             96.0 * 0.85
         );
+    }
+
+    /// M434 — `getBaseColor` against the numbers vanilla 26.2 drew on the
+    /// playtest harness (`rewo_lighting`, render distance 6, plains, facing
+    /// north): the fog leans 21% toward the sky at noon, and at midnight the
+    /// night-multiplied fog leans toward a black sky.
+    #[test]
+    fn the_atmospheric_fog_leans_toward_the_sky_by_the_render_distance() {
+        let rgb = |r: i32, g: i32, b: i32| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+        let north = [0.0, -0.42, -0.9];
+        let noon = atmospheric_base_color(
+            rgb(192, 216, 255),
+            rgb(120, 167, 255),
+            0,
+            0.0,
+            north,
+            6,
+            512.0,
+        );
+        assert_eq!(noon.map(|c| (c * 255.0).round() as i32), [176, 205, 255]);
+        // Midnight: the plains fog times the night multiplier, 17 17 22 (the
+        // floored `colorFromFloat` keyframes lerped), truncated as
+        // `ARGB.multiply` is: 12 14 22; leaned toward a black sky.
+        let night = atmospheric_base_color(rgb(12, 14, 22), rgb(0, 0, 0), 0, 0.0, north, 6, 512.0);
+        assert_eq!(night.map(|c| (c * 255.0).round() as i32), [9, 11, 17]);
+        // At render distance 32 (and a sky fog end that does not cap it) the
+        // sky term is gone; below 2 chunks it is the full 1 - 0.25^0.25.
+        let far = atmospheric_base_color(
+            rgb(192, 216, 255),
+            rgb(120, 167, 255),
+            0,
+            0.0,
+            north,
+            32,
+            512.0,
+        );
+        assert_eq!(far, rgb(192, 216, 255));
+    }
+
+    /// M434 — the sunrise term: facing the sun (east at sunrise, where the
+    /// sun angle's sine is negative) the fog leans toward the sunrise colour
+    /// by the facing times its alpha; facing away, or under render distance
+    /// 4, it does not.
+    #[test]
+    fn the_atmospheric_fog_takes_the_sunrise_only_facing_the_sun() {
+        let fog = [0.5, 0.5, 0.5];
+        let sunrise = (255 << 24) | (255 << 16) | (128 << 8); // opaque orange
+        let east = [1.0, 0.0, 0.0];
+        let west = [-1.0, 0.0, 0.0];
+        let angle = -std::f32::consts::FRAC_PI_2; // sin < 0: the sun is east
+        let at = |fwd, rd| atmospheric_base_color(fog, fog, sunrise, angle, fwd, rd, 512.0);
+        let toward = at(east, 32);
+        assert_eq!(toward.map(|c| (c * 255.0).round() as i32), [255, 128, 0]);
+        assert_eq!(at(west, 32), [128.0 / 255.0; 3]);
+        assert_eq!(at(east, 3).map(|c| (c * 255.0).round() as i32)[0], 128);
     }
 }

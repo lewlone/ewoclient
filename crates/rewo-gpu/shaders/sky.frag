@@ -21,7 +21,8 @@
 // meets the sky without a seam. (Before M209 this was an invented gradient
 // whose horizon was the biome SKY colour while the terrain faded to the FOG
 // colour — a hard line wherever terrain ended below the horizon.)
-// Colours arrive linear and mix in linear, as the world pass's fog does.
+// Colours arrive linear; M434 — they mix on the encoded numbers, as vanilla's
+// `apply_fog` does (and the world pass's fog since M432), and are decoded once.
 
 layout(location = 0) in vec2 v_clip;
 layout(location = 0) out vec4 out_color;
@@ -47,6 +48,14 @@ float fan_fraction(vec2 p) {
         m = max(m, dot(p, vec2(cos(a), sin(a))));
     }
     return m / APOTHEM;
+}
+
+vec3 to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }
 
 // `linear_fog_value` as fog.glsl writes it.
@@ -78,13 +87,13 @@ void main() {
     if (dir.y > 0.0) {
         float s = fan_fraction(dir.xz * (16.0 / dir.y));
         if (s <= 1.0) {
-            col = mix(pc.sky.rgb, pc.fog.rgb, disc_fog(s, sky_end));
+            col = to_linear(mix(to_srgb(pc.sky.rgb), to_srgb(pc.fog.rgb), disc_fog(s, sky_end)));
         }
     }
     if (pc.params.y > 0.5 && dir.y < 0.0) {
         float s = fan_fraction(dir.xz * (-4.0 / dir.y));
         if (s <= 1.0) {
-            col = mix(vec3(0.0), pc.fog.rgb, disc_fog(s, sky_end));
+            col = to_linear(mix(vec3(0.0), to_srgb(pc.fog.rgb), disc_fog(s, sky_end)));
         }
     }
     out_color = vec4(col, 1.0);

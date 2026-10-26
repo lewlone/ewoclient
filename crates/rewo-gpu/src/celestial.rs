@@ -381,6 +381,10 @@ pub struct CelestialPass {
 
     // Sunrise pipeline.
     sunrise_pipeline: vk::Pipeline,
+    /// M434 — the textured, star and sunrise pipelines again, built against
+    /// the target's UNORM twin for the gamma-space scope (`None` when the
+    /// format has none: the linear set draws, as before M434).
+    gamma: Option<[vk::Pipeline; 3]>,
     sunrise_layout: vk::PipelineLayout,
     sunrise_buf: Buf,
     sunrise_verts: u32,
@@ -536,7 +540,12 @@ impl CelestialPass {
                 )
                 .map_err(|e| format!("celestial tex layout: {e}"))?
         };
-        let tex_pipeline = build_tex_pipeline(&device, tex_layout, color_format)?;
+        let tex_pipeline = build_tex_pipeline(
+            &device,
+            tex_layout,
+            color_format,
+            include_bytes!(concat!(env!("OUT_DIR"), "/celestial.frag.spv")),
+        )?;
 
         // ---- star + sunrise pipelines (no descriptor set) ----
         let empty_layout = || -> Result<vk::PipelineLayout, String> {
@@ -552,7 +561,30 @@ impl CelestialPass {
         let star_layout = empty_layout()?;
         let star_pipeline = build_star_pipeline(&device, star_layout, color_format)?;
         let sunrise_layout = empty_layout()?;
-        let sunrise_pipeline = build_sunrise_pipeline(&device, sunrise_layout, color_format)?;
+        let sunrise_pipeline = build_sunrise_pipeline(
+            &device,
+            sunrise_layout,
+            color_format,
+            include_bytes!(concat!(env!("OUT_DIR"), "/sunrise.frag.spv")),
+        )?;
+        let gamma = match crate::world::unorm_of(color_format) {
+            Some(unorm) => Some([
+                build_tex_pipeline(
+                    &device,
+                    tex_layout,
+                    unorm,
+                    include_bytes!(concat!(env!("OUT_DIR"), "/celestial_gamma.frag.spv")),
+                )?,
+                build_star_pipeline(&device, star_layout, unorm)?,
+                build_sunrise_pipeline(
+                    &device,
+                    sunrise_layout,
+                    unorm,
+                    include_bytes!(concat!(env!("OUT_DIR"), "/sunrise_gamma.frag.spv")),
+                )?,
+            ]),
+            None => None,
+        };
 
         Ok(Self {
             tex_pipeline,
@@ -576,7 +608,14 @@ impl CelestialPass {
             sunrise_layout,
             sunrise_buf,
             sunrise_verts,
+            gamma,
         })
+    }
+
+    /// M434 — whether the gamma-space pipelines exist (the target format has
+    /// a UNORM twin).
+    pub fn has_gamma(&self) -> bool {
+        self.gamma.is_some()
     }
 
     /// Accepted stars (quads) and the equivalent index count vanilla would draw
@@ -591,6 +630,8 @@ impl CelestialPass {
     /// Draw sunrise → sun → moon → stars (the `LevelRenderer.addSkyPass`
     /// order), all in rotation-only sky space (`sky_vp = view_proj · T(eye)`),
     /// no depth. `extent` sets the (flipped) viewport, matching the terrain.
+    /// M434 — `gamma` draws with the gamma-space set, inside the caller's
+    /// UNORM scope (vanilla blends the sky's glows on encoded numbers).
     pub fn draw(
         &self,
         gpu: &Gpu,
@@ -598,8 +639,13 @@ impl CelestialPass {
         sky_vp: [[f32; 4]; 4],
         extent: vk::Extent2D,
         state: &CelestialState,
+        gamma: bool,
     ) {
         let device = &gpu.device;
+        let [tex_pipeline, star_pipeline, sunrise_pipeline] = match self.gamma {
+            Some(g) if gamma => g,
+            _ => [self.tex_pipeline, self.star_pipeline, self.sunrise_pipeline],
+        };
         let vp = Mat4::from_cols_array_2d(&sky_vp);
         let base = sky_base_rotation();
         unsafe {
@@ -623,11 +669,7 @@ impl CelestialPass {
                 tint: state.sunrise_rgba,
             };
             unsafe {
-                device.cmd_bind_pipeline(
-                    cb,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.sunrise_pipeline,
-                );
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, sunrise_pipeline);
                 push_const(device, cb, self.sunrise_layout, &push);
                 device.cmd_bind_vertex_buffers(cb, 0, &[self.sunrise_buf.buffer], &[0]);
                 device.cmd_draw(cb, self.sunrise_verts, 1, 0, 0);
@@ -642,6 +684,7 @@ impl CelestialPass {
         self.draw_tex(
             gpu,
             cb,
+            tex_pipeline,
             &self.sun_buf,
             0,
             vp * sun_model,
@@ -657,6 +700,7 @@ impl CelestialPass {
         self.draw_tex(
             gpu,
             cb,
+            tex_pipeline,
             &self.moon_buf,
             phase * 6,
             vp * moon_model,
@@ -672,7 +716,7 @@ impl CelestialPass {
                 tint: [b, b, b, b],
             };
             unsafe {
-                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.star_pipeline);
+                device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, star_pipeline);
                 push_const(device, cb, self.star_layout, &push);
                 device.cmd_bind_vertex_buffers(cb, 0, &[self.star_buf.buffer], &[0]);
                 device.cmd_draw(cb, self.star_verts, 1, 0, 0);
@@ -726,6 +770,7 @@ impl CelestialPass {
         self.draw_tex(
             gpu,
             cb,
+            self.tex_pipeline,
             &self.end_flash_buf,
             0,
             vp * model,
@@ -733,10 +778,12 @@ impl CelestialPass {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_tex(
         &self,
         gpu: &Gpu,
         cb: vk::CommandBuffer,
+        pipeline: vk::Pipeline,
         buf: &Buf,
         first_vertex: u32,
         mvp: Mat4,
@@ -748,7 +795,7 @@ impl CelestialPass {
             tint,
         };
         unsafe {
-            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.tex_pipeline);
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
             device.cmd_bind_descriptor_sets(
                 cb,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -772,6 +819,9 @@ impl CelestialPass {
             device.destroy_pipeline(self.star_pipeline, None);
             device.destroy_pipeline_layout(self.star_layout, None);
             device.destroy_pipeline(self.sunrise_pipeline, None);
+            for p in self.gamma.take().into_iter().flatten() {
+                device.destroy_pipeline(p, None);
+            }
             device.destroy_pipeline_layout(self.sunrise_layout, None);
             device.destroy_descriptor_pool(self.pool, None);
             device.destroy_descriptor_set_layout(self.set_layout, None);
@@ -1116,6 +1166,7 @@ fn build_tex_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    frag_spv: &[u8],
 ) -> Result<vk::Pipeline, String> {
     let attrs = [
         vk::VertexInputAttributeDescription::default()
@@ -1132,7 +1183,7 @@ fn build_tex_pipeline(
         layout,
         color_format,
         include_bytes!(concat!(env!("OUT_DIR"), "/celestial.vert.spv")),
-        include_bytes!(concat!(env!("OUT_DIR"), "/celestial.frag.spv")),
+        frag_spv,
         std::mem::size_of::<TexVertex>() as u32,
         &attrs,
         overlay_blend(),
@@ -1166,6 +1217,7 @@ fn build_sunrise_pipeline(
     device: &ash::Device,
     layout: vk::PipelineLayout,
     color_format: vk::Format,
+    frag_spv: &[u8],
 ) -> Result<vk::Pipeline, String> {
     let attrs = [
         vk::VertexInputAttributeDescription::default()
@@ -1182,7 +1234,7 @@ fn build_sunrise_pipeline(
         layout,
         color_format,
         include_bytes!(concat!(env!("OUT_DIR"), "/sunrise.vert.spv")),
-        include_bytes!(concat!(env!("OUT_DIR"), "/sunrise.frag.spv")),
+        frag_spv,
         std::mem::size_of::<ColorVertex>() as u32,
         &attrs,
         translucent_blend(),

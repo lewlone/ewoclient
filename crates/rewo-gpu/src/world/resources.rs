@@ -80,6 +80,7 @@ impl WorldRenderer {
                 fog_tint: [1.0; 3],
                 sky_base: DEFAULT_SKY,
                 fog_base: DEFAULT_FOG,
+                fog_final: None,
                 fog: parse_fog_env(),
                 sky_end: super::sky::DEFAULT_SKY_END,
                 dark_disc: false,

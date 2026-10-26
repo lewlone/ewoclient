@@ -412,16 +412,16 @@ pub(super) fn apply_biome_sky_fog(wr: &mut WorldRenderer, session: &PlaySession)
     //      `applyWeatherDarken` to the SKY colour only, on top of (1).
     //
     // Applying (2) to the fog as well — which this did before — double-darkens
-    // it with a curve that was never meant for it.
+    // it with a curve that was never meant for it. M434 — and (2) is not the
+    // sky disc's: `SkyRenderer` draws the attribute as it is, so the darken
+    // happens where `getBaseColor` is modelled (`apply_fog_environment`), on
+    // the sky colour the fog leans toward, not here on the drawn sky.
     let w = effective_weather(session);
     let (rain, thunder) = (w.rain_level(), w.thunder_level());
     let weathered = |sky: i32, fog: i32| -> (i32, i32) {
         let mut a = weather_attributes(sky, fog, session);
         a.apply(rain, thunder);
-        (
-            rewo_world::weather::apply_weather_darken(a.sky_color, rain, thunder),
-            a.fog_color,
-        )
+        (a.sky_color, a.fog_color)
     };
     if let Some(sky) = session.world.camera_sky(eye) {
         let fog = session.world.camera_fog(eye).unwrap_or(sky);

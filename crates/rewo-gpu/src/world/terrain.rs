@@ -376,12 +376,10 @@ impl WorldRenderer {
         let env = self.scene.lightmap.env_fog_words();
         [
             [e[0], e[1], e[2], self.scene.fog[0]],
-            [
-                self.scene.fog_base[0] * self.scene.fog_tint[0],
-                self.scene.fog_base[1] * self.scene.fog_tint[1],
-                self.scene.fog_base[2] * self.scene.fog_tint[2],
-                self.scene.fog[1],
-            ],
+            {
+                let [r, g, b] = self.fog_color();
+                [r, g, b, self.scene.fog[1]]
+            },
             [env[0], env[1], 0.0, 0.0],
         ]
     }
@@ -397,12 +395,10 @@ impl WorldRenderer {
                 self.scene.camera_eye[2],
                 self.scene.fog[0],
             ],
-            fog_col: [
-                self.scene.fog_base[0] * self.scene.fog_tint[0],
-                self.scene.fog_base[1] * self.scene.fog_tint[1],
-                self.scene.fog_base[2] * self.scene.fog_tint[2],
-                self.scene.fog[1],
-            ],
+            fog_col: {
+                let [r, g, b] = self.fog_color();
+                [r, g, b, self.scene.fog[1]]
+            },
             light,
             sky_col,
         };

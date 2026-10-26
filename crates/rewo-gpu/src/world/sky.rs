@@ -31,6 +31,14 @@ pub const DEFAULT_FOG: [f32; 3] = [0.527_115, 0.686_685, 1.0];
 /// SKY_FOG_END_DISTANCE 512)` at vanilla's default render distance, 12.
 pub const DEFAULT_SKY_END: f32 = 192.0;
 
+/// M434 — `base · tint` on the encoded numbers (vanilla's colour attributes
+/// are `ARGB` bytes and its timeline modifiers multiply them), linear in and
+/// out.
+fn gamma_multiply(base: [f32; 3], tint: [f32; 3]) -> [f32; 3] {
+    use crate::entities::{linear_to_srgb, srgb_to_linear};
+    std::array::from_fn(|i| srgb_to_linear(linear_to_srgb(base[i].clamp(0.0, 1.0)) * tint[i]))
+}
+
 /// Which sky the world pass draws — `DimensionType.Skybox`, as consumed by
 /// `LevelRenderer.addSkyPass`.
 ///
@@ -226,6 +234,33 @@ impl WorldRenderer {
         )
     }
 
+    /// M434 — the sky colour the disc draws: the base times its day/night
+    /// tint, multiplied on the encoded numbers as vanilla's `ARGB.multiply`
+    /// (`MULTIPLY_RGB`) is, and back to linear. Until M434 the tint
+    /// multiplied the linear base, so midnight's 0.07 acted as 0.30.
+    pub(crate) fn sky_color(&self) -> [f32; 3] {
+        gamma_multiply(self.scene.sky_base, self.scene.sky_tint)
+    }
+
+    /// M434 — the fog colour every pass draws (the terrain's and the
+    /// entities' fade, the sky disc's fog, the uncovered sky): the app's
+    /// finished colour when it set one ([`Self::set_fog_color`]), else the
+    /// base times its tint as [`Self::sky_color`] multiplies.
+    pub(crate) fn fog_color(&self) -> [f32; 3] {
+        self.scene
+            .fog_final
+            .unwrap_or_else(|| gamma_multiply(self.scene.fog_base, self.scene.fog_tint))
+    }
+
+    /// M434 — this frame's finished fog colour (linear), or `None` for the
+    /// base times its tint. Set every frame by the live app's fog
+    /// environment (`AtmosphericFogEnvironment.getBaseColor`, then
+    /// `computeFogColor`'s darkening); it leaves the base and the tint, which
+    /// [`Self::sky_fog_inputs`] reports, as the frame set them.
+    pub fn set_fog_color(&mut self, linear: Option<[f32; 3]>) {
+        self.scene.fog_final = linear;
+    }
+
     /// M422 — the sky disc's `FogSkyEnd` alone (a fog environment's
     /// `skyEnd`), keeping the dark disc as set.
     pub fn set_sky_end(&mut self, sky_end: f32) {
@@ -271,20 +306,16 @@ impl WorldRenderer {
             inv_view_proj: inv,
             // Vanilla's `SKY_COLOR` (`MULTIPLY_RGB`) tints the whole sky disc
             // (the M11 bug tinted only part of it, leaving a blue midnight).
-            sky: [
-                self.scene.sky_base[0] * self.scene.sky_tint[0],
-                self.scene.sky_base[1] * self.scene.sky_tint[1],
-                self.scene.sky_base[2] * self.scene.sky_tint[2],
-                1.0,
-            ],
+            sky: {
+                let [r, g, b] = self.sky_color();
+                [r, g, b, 1.0]
+            },
             // The SAME fog colour the terrain fades to (`push_world`), so the
             // world's far edge meets the sky without a seam.
-            fog: [
-                self.scene.fog_base[0] * self.scene.fog_tint[0],
-                self.scene.fog_base[1] * self.scene.fog_tint[1],
-                self.scene.fog_base[2] * self.scene.fog_tint[2],
-                1.0,
-            ],
+            fog: {
+                let [r, g, b] = self.fog_color();
+                [r, g, b, 1.0]
+            },
             params: [
                 self.scene.sky_end,
                 if self.scene.dark_disc { 1.0 } else { 0.0 },
@@ -433,8 +464,17 @@ impl WorldRenderer {
                 self.draw_sky(gpu, cb, view_proj, extent);
                 // Sun/moon/stars/sunrise (M12), between the gradient sky and
                 // terrain.
+                // M434 — in vanilla's space when the frame has a UNORM twin:
+                // the sun's halo and the stars add encoded numbers.
                 if let Some(celestial) = &self.celestial {
-                    celestial.draw(gpu, cb, sky_vp, extent, &self.scene.celestial_state);
+                    let state = &self.scene.celestial_state;
+                    if self.gamma.is_some() && celestial.has_gamma() {
+                        self.in_gamma_space(gpu, cb, extent, || {
+                            celestial.draw(gpu, cb, sky_vp, extent, state, true)
+                        });
+                    } else {
+                        celestial.draw(gpu, cb, sky_vp, extent, state, false);
+                    }
                 }
             }
         }

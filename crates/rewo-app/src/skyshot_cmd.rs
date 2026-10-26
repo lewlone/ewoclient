@@ -225,19 +225,24 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         // zenith is the tinted sky colour moved that far toward the tinted fog
         // colour. At midnight `SKY_COLOR` is ~0 and `FOG_COLOR` dark, so this
         // is near black; the M11 bug (an untinted zenith) is bright blue and
-        // misses by a hundred units.
+        // misses by a hundred units. M434 — vanilla's colours are bytes: the
+        // tint multiplies the encoded base (`ARGB.multiply`) and the disc
+        // mixes the encoded colours (`apply_fog`), so the oracle does too.
         let want = {
             let d = daylight::sky_lighting(MIDNIGHT);
             let f = 16.0 / rewo_gpu::world::DEFAULT_SKY_END;
             let (sky, fog) = (rewo_gpu::world::DEFAULT_SKY, rewo_gpu::world::DEFAULT_FOG);
-            std::array::from_fn::<f32, 3, _>(|i| {
-                let lin = sky[i] * d.sky_color[i] * (1.0 - f) + fog[i] * d.fog_color[i] * f;
-                let c = if lin <= 0.003_130_8 {
+            let enc = |lin: f32| {
+                if lin <= 0.003_130_8 {
                     lin * 12.92
                 } else {
                     1.055 * lin.powf(1.0 / 2.4) - 0.055
-                };
-                c * 255.0
+                }
+            };
+            std::array::from_fn::<f32, 3, _>(|i| {
+                let sky = enc(sky[i]) * d.sky_color[i];
+                let fog = enc(fog[i]) * d.fog_color[i];
+                (sky * (1.0 - f) + fog * f) * 255.0
             })
         };
         if PROBES.bad((0..3).any(|i| (mz[i] - want[i]).abs() > 3.0)) {
@@ -264,8 +269,9 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
     // -- Section 3: whole-gradient SKY_COLOR tint (permanent M11 regression) --
     // Both the zenith (up view) and the horizon (level view) must scale by the
     // requested tint. The M11 bug tinted only the horizon, leaving a blue
-    // zenith; this fails if EITHER term drops `SKY_COLOR`. The attachment is
-    // sRGB, so we decode the read-back bytes to linear before taking ratios.
+    // zenith; this fails if EITHER term drops `SKY_COLOR`. M434 — the tint
+    // multiplies the encoded colour (`ARGB.multiply`), so the ratio is taken
+    // over the read-back bytes themselves.
     {
         let mut wr = WorldRenderer::new(gpu, off.format, assets::TEX_SIZE, &baked.layers)?;
         wr.set_camera([0.0, 0.0, 0.0]);
@@ -288,8 +294,8 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
             ("horizon", base_horizon, tint_horizon),
         ] {
             for c in 0..3 {
-                let bl = srgb_to_linear(base[c] / 255.0);
-                let tl = srgb_to_linear(tinted[c] / 255.0);
+                let bl = base[c] / 255.0;
+                let tl = tinted[c] / 255.0;
                 if bl <= 1e-4 {
                     continue; // channel carries no signal to divide
                 }
@@ -328,8 +334,8 @@ fn run_check(gpu: &mut Gpu, baked: &assets::BakedAssets, args: &SkyshotArgs) -> 
         wr.set_sky_tint([0.0; 3], [0.0; 3]); // black sky
         let up = up_view(w, h);
 
-        // Each texture's predicted centre pixel over black (SRGB→linear ×alpha
-        // →SRGB), computed independently of the renderer.
+        // Each texture's predicted centre pixel over black (the encoded texel
+        // ×alpha, M434), computed independently of the renderer.
         let predicted: [[f32; 3]; 8] =
             std::array::from_fn(|q| predict_moon_center(SYN_MOON_RGB[q], SYN_MOON_ALPHA[q]));
 
@@ -1461,14 +1467,14 @@ fn linear_to_srgb(c: f32) -> f32 {
 }
 
 /// The synthetic-moon centre pixel over a black sky, derived independently of
-/// the renderer: the SRGB atlas linearises the texel, OVERLAY multiplies by the
-/// (linear) alpha over black, the SRGB attachment re-encodes on store.
+/// the renderer: vanilla's OVERLAY adds the encoded texel times its alpha
+/// (M434; until then the linear model, decode × alpha → encode).
 fn predict_moon_center(rgb: [u8; 3], alpha: u8) -> [f32; 3] {
+    // M434 — the OVERLAY blend adds `src · alpha` on encoded numbers, as
+    // vanilla's does (the pass draws in the gamma-space scope), so over black
+    // the byte is the texel's times the alpha.
     let a = alpha as f32 / 255.0;
-    std::array::from_fn(|c| {
-        let lin = srgb_to_linear(rgb[c] as f32 / 255.0) * a;
-        (linear_to_srgb(lin) * 255.0).clamp(0.0, 255.0)
-    })
+    std::array::from_fn(|c| (rgb[c] as f32 * a).clamp(0.0, 255.0))
 }
 
 fn color_dist2(a: [f32; 3], b: [f32; 3]) -> f32 {

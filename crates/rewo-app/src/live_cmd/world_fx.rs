@@ -144,7 +144,7 @@ pub(super) fn apply_render_distance_fog(wr: &mut WorldRenderer, session: &PlaySe
 /// water, in lava or powder snow, or blinded or in darkness, this frame's
 /// environmental band, sky end and fog colour are that environment's
 /// ([`rewo_world::fog_env`]). With none applicable and nothing to darken or
-/// brighten, nothing is touched. Runs after [`apply_render_distance_fog`]
+/// brighten, the atmospheric colour is `getBaseColor`'s (M434). Runs after [`apply_render_distance_fog`]
 /// (which set the sky end) and after the lightmap and biome colour.
 pub(super) fn apply_fog_environment(
     wr: &mut WorldRenderer,
@@ -192,6 +192,49 @@ pub(super) fn apply_fog_environment(
         ..session.fog_effects(partial)
     };
     let (sky_base, fog_base, sky_tint, fog_tint) = wr.sky_fog_inputs();
+    // M434 — the atmospheric fog colour as `getBaseColor` makes it, on the
+    // `ARGB` floats (sRGB) `computeFogColor` works in: the fog and sky bases
+    // through the day's multiply (on the encoded numbers, as `ARGB.multiply`),
+    // the sunrise lean and the lean toward the sky.
+    let atmospheric = {
+        // `ARGB.multiply`: the bytes, truncated.
+        let multiply = |base: [f32; 3], tint: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| {
+                let b = (linear_to_srgb(base[i]) * 255.0).round() as i32;
+                let t = (tint[i].clamp(0.0, 1.0) * 255.0).round() as i32;
+                (b * t / 255) as f32 / 255.0
+            })
+        };
+        let fog = multiply(fog_base, fog_tint);
+        // `getBaseColor`'s own `applyWeatherDarken`, on the sky colour the fog
+        // leans toward only (the disc draws the attribute undarkened).
+        let sky = {
+            let [r, g, b] = multiply(sky_base, sky_tint).map(|c| (c * 255.0).round() as i32);
+            let w = effective_weather(session);
+            let d = rewo_world::weather::apply_weather_darken(
+                (0xFF << 24) | (r << 16) | (g << 8) | b,
+                w.rain_level(),
+                w.thunder_level(),
+            );
+            rewo_world::fog_env::argb_floats(d)
+        };
+        let dim = session.active_dimension_type.as_ref();
+        let (sunrise, sun_angle) = if dimension_light(dim).day_timeline {
+            let c = rewo_world::celestial::celestial_at(session.day_ticks.unwrap_or(6000));
+            (c.sunrise_sunset_color, c.sun_angle_rad())
+        } else {
+            (0, 0.0)
+        };
+        fe::atmospheric_base_color(
+            fog,
+            sky,
+            sunrise,
+            sun_angle,
+            forward,
+            session.effective_render_distance(),
+            SKY_FOG_END_DISTANCE,
+        )
+    };
     let night_vision = session
         .visual_effects()
         .night_vision_duration()
@@ -205,9 +248,7 @@ pub(super) fn apply_fog_environment(
             .world
             .camera_water_fog_color(eye)
             .unwrap_or(fe::DEFAULT_WATER_FOG_COLOR),
-        // The atmospheric colour the frame drew, as the `ARGB` floats (sRGB)
-        // `computeFogColor` works in.
-        std::array::from_fn(|i| linear_to_srgb(fog_base[i] * fog_tint[i])),
+        atmospheric,
     );
     if let Some(env) = plan.band {
         wr.set_env_fog([env.start, env.end]);
@@ -216,12 +257,11 @@ pub(super) fn apply_fog_environment(
         // water's band). The atmospheric `cloudEnd` stays [`CLOUD_FOG_END`].
         wr.set_cloud_fog_end(env.cloud_end);
     }
-    if let Some(rgb) = plan.color {
-        // Back to the linear base the GPU multiplies by its tint, with the
-        // tint spent: the environment's colour has no day/night track.
-        wr.set_sky_fog_base(sky_base, rgb.map(srgb_to_linear));
-        wr.set_sky_tint(sky_tint, [1.0; 3]);
-    }
+    // M434 — the finished colour into the fog's own slot (the environment's
+    // over the atmospheric one), linear; the base and tint stay the frame's
+    // inputs, so nothing compounds frame over frame where the base is not
+    // re-set (M422 overwrote the base).
+    wr.set_fog_color(Some(plan.color.unwrap_or(atmospheric).map(srgb_to_linear)));
     (fog_type, plan)
 }
 

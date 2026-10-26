@@ -85,6 +85,17 @@ fn main() {
             "hand_glint.frag.spv",
             Some("-DHAND_FOG"),
         ),
+        // M434 — the sun, moon and sunrise fan for the gamma-space scope.
+        (
+            "shaders/celestial.frag",
+            "celestial_gamma.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
+        (
+            "shaders/sunrise.frag",
+            "sunrise_gamma.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
     ]) {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");

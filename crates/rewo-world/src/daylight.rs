@@ -23,9 +23,11 @@ pub const DAY_TICKS: i64 = 24000;
 const NIGHT_SKY_LIGHT_COLOR: [f32; 3] = [0.48, 0.48, 1.0];
 const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
-/// `NIGHT_FOG_COLOR_MULTIPLIER_{START,END}`.
-const NIGHT_FOG_START: [f32; 3] = [0.05, 0.05, 0.09];
-const NIGHT_FOG_END: [f32; 3] = [0.09, 0.09, 0.09];
+/// `NIGHT_FOG_COLOR_MULTIPLIER_{START,END}`: `ARGB.colorFromFloat(1, 0.05,
+/// 0.05, 0.09)` and `(1, 0.09, 0.09, 0.09)`, which floor to bytes (M434: the
+/// fog multiply runs on them, `ARGB.multiply`).
+const NIGHT_FOG_START: [f32; 3] = [12.0 / 255.0, 12.0 / 255.0, 22.0 / 255.0];
+const NIGHT_FOG_END: [f32; 3] = [22.0 / 255.0; 3];
 
 /// `SKY_LIGHT_FACTOR` multiplier track (base 1.0).
 const SKY_FACTOR: &[(i64, f32)] = &[(730, 1.0), (11270, 1.0), (13140, 0.24), (22860, 0.24)];
