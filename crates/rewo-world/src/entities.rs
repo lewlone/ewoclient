@@ -527,6 +527,11 @@ pub struct EntityState {
     /// `AbstractArrow.isCritArrow()` (`ID_FLAGS` bit 1): a critical arrow
     /// trails crit particles while it flies.
     arrow_crit: bool,
+    /// `Camel.updateWalkAnimation`: the camel's walk target is
+    /// `min(distance * 6, 1)` eased by 0.2 (the default is `* 4`, `0.4`),
+    /// and 0 while it is not standing.
+    camel_walk: bool,
+    camel_still: bool,
     /// M362 — `AbstractArrow.IN_GROUND` (or a block the client's own flight
     /// hit): the flight has ended.
     in_ground: bool,
@@ -695,6 +700,8 @@ impl EntityState {
             prev_head_yaw: yaw,
             flight: None,
             arrow_crit: false,
+            camel_walk: false,
+            camel_still: false,
             in_ground: false,
             lerp_steps: 0,
             lerp_len: LERP_STEPS,
@@ -890,13 +897,51 @@ impl EntityState {
             self.lerp_steps -= 1;
         }
         // Walk animation from this tick's horizontal displacement (vanilla
-        // LivingEntity.aiStep): target = min(1, dist·4), smoothed by 0.4,
-        // phase advances by the smoothed amount.
-        let dx = self.cur[0] - before[0];
-        let dz = self.cur[2] - before[2];
-        let target = ((dx * dx + dz * dz).sqrt() as f32 * 4.0).min(1.0);
-        self.limb_amount += (target - self.limb_amount) * 0.4;
+        // LivingEntity.aiStep). A vehicle the local player steers moves AFTER
+        // this (the session's own simulation), so its walk is updated by
+        // [`Self::update_walk_after_move`] once it has.
+        if !authoritative {
+            self.update_walk(before);
+        }
+    }
+
+    /// `LivingEntity.calculateEntityAnimation` → `updateWalkAnimation`:
+    /// `target = min(distance * 4, 1)`, `speed += (target - speed) * 0.4`,
+    /// the phase advances by the new speed. A camel's is `* 6` and `0.2`,
+    /// and 0 while it is not standing (`Camel.updateWalkAnimation`).
+    fn update_walk(&mut self, from: [f64; 3]) {
+        let dx = self.cur[0] - from[0];
+        let dz = self.cur[2] - from[2];
+        let distance = (dx * dx + dz * dz).sqrt() as f32;
+        let (scale, factor) = if self.camel_walk {
+            (6.0, 0.2)
+        } else {
+            (4.0, 0.4)
+        };
+        let target = if self.camel_walk && self.camel_still {
+            0.0
+        } else {
+            (distance * scale).min(1.0)
+        };
+        self.limb_amount += (target - self.limb_amount) * factor;
         self.limb_swing += self.limb_amount;
+    }
+
+    /// The walk animation of a mount the local player steers, once the
+    /// session has moved it this tick: the displacement since the tick's
+    /// start (`prev`, which [`Self::tick`] set). Until M-playtest a steered
+    /// horse or camel stood on frozen limbs, because its position changes
+    /// after the entity's own tick and the displacement that tick saw was 0.
+    pub fn update_walk_after_move(&mut self) {
+        self.update_walk(self.prev);
+    }
+
+    /// `AbstractHorse.tickRidden`'s `setRot(rider yaw, rider pitch * 0.5)`
+    /// and `yHeadRot = yRot`: the mount looks where its rider does.
+    pub fn set_ridden_look(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = yaw;
+        self.head_yaw = yaw;
+        self.pitch = pitch;
     }
 
     /// Overwrite **this tick's** position without touching `prev` or the
@@ -2700,6 +2745,24 @@ impl EntityTable {
         }
     }
 
+    /// Mark `id` a camel: its walk animation follows `Camel.
+    /// updateWalkAnimation` (see [`EntityState::update_walk`]).
+    pub fn set_camel_walk(&mut self, id: i32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.camel_walk = true;
+        }
+    }
+
+    /// The walk animation of the mount the local player steers, after the
+    /// session moved it (see [`EntityState::update_walk_after_move`]), and
+    /// its look (`tickRidden`'s `setRot`).
+    pub fn steered_mount_moved(&mut self, id: i32, yaw: f32, pitch: f32) {
+        if let Some(e) = self.map.get_mut(&id) {
+            e.update_walk_after_move();
+            e.set_ridden_look(yaw, pitch);
+        }
+    }
+
     /// `AbstractArrow.ID_FLAGS` (index 8 BYTE; bit 1 is `FLAG_CRIT`); only an
     /// arrow's flight reads it.
     pub fn set_arrow_flags(&mut self, id: i32, flags: u8) {
@@ -3835,6 +3898,8 @@ impl EntityTable {
             e.tick_swim(pose == 3 || (pose == 1 && !fall_flying));
             // `AbstractHorse.tick`'s stand / eat / mouth clocks.
             e.equine.tick();
+            // `Camel.updateWalkAnimation`: only `Pose.STANDING` (0) walks.
+            e.camel_still = pose != 0;
             // M169 — `Camel.tick` / `AbstractNautilus.tick`: `if (dashCooldown
             // > 0) dashCooldown--`, and `Entity.baseTick`'s `firstTick = false`.
             if e.dash_cooldown > 0 {
@@ -4585,6 +4650,49 @@ mod tests {
         let (swing, amt) = e.limb();
         assert!(amt > 0.5, "sustained walk drives amount up: {amt}");
         assert!(swing > 0.0, "phase advanced: {swing}");
+    }
+
+    /// A mount the local player steers moves after its own tick, so its
+    /// walk animation reads the move the session made (`calculateEntityAnimation`
+    /// at the end of `LivingEntity.tick`): `target = min(0.1 * 4, 1) = 0.4`,
+    /// eased by 0.4 to 0.16, and the phase advances by that speed. Before the
+    /// fix the limbs of a ridden horse never moved.
+    #[test]
+    fn a_steered_mount_walks_by_the_move_the_session_made() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.tick(false, true);
+        e.set_simulated([0.0, 0.0, 0.1], 0.0);
+        assert_eq!(e.limb(), (0.0, 0.0), "the entity's own tick sees no move");
+        e.update_walk_after_move();
+        let (swing, amount) = e.limb();
+        assert!((amount - 0.16).abs() < 1e-6 && (swing - 0.16).abs() < 1e-6);
+        // A second tick builds on it (the displacement is from the tick's start).
+        e.tick(false, true);
+        e.set_simulated([0.0, 0.0, 0.2], 0.0);
+        e.update_walk_after_move();
+        assert!((e.limb().1 - (0.16 + (0.4 - 0.16) * 0.4)).abs() < 1e-6);
+    }
+
+    /// `Camel.updateWalkAnimation`: `min(distance * 6, 1)` eased by 0.2, and
+    /// 0 while the pose is not STANDING.
+    #[test]
+    fn a_camel_walks_at_six_times_the_distance_and_a_fifth_the_ease() {
+        let mut e = EntityState::new(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        e.camel_walk = true;
+        e.nudge(0.0, 0.0, 0.1);
+        for _ in 0..3 {
+            e.tick(false, false);
+        }
+        // 0.1 over the three lerp ticks, a third each: 0.0333 * 6 = 0.2,
+        // eased by 0.2 three times from 0.
+        let (_, amount) = e.limb();
+        let want = (0..3).fold(0.0f32, |a, _| a + (0.2 - a) * 0.2);
+        assert!((amount - want).abs() < 1e-4, "{amount} vs {want}");
+        // Sitting: the target is 0 and the speed decays.
+        e.camel_still = true;
+        e.nudge(0.0, 0.0, 0.3);
+        e.tick(false, false);
+        assert!(e.limb().1 < amount);
     }
 
     #[test]

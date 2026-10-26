@@ -6663,6 +6663,9 @@ impl PlaySession {
         if let Some(e) = self.world.entities.get_mut(id) {
             e.set_simulated([s.x, s.y, s.z], s.yaw);
         }
+        // Its walk animation and its look (`tickRidden`'s `setRot`), which
+        // the entity's own tick could not know: the move happens here.
+        self.world.entities.steered_mount_moved(id, s.yaw, s.pitch);
         self.seat_local_player(id);
         self.steered_horse = Some(steered);
         let pose = rewo_world::boat::BoatState {
