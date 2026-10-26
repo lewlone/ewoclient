@@ -50,6 +50,8 @@ pub struct Options {
     pub hide_lightning_flash: bool,
     /// M282 — `options.vignette`, default on.
     pub vignette: bool,
+    /// `options.renderClouds` (`CloudStatus`), default FANCY.
+    pub clouds: CloudOption,
     /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
     ///
     /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
@@ -116,6 +118,7 @@ impl Default for Options {
             music_frequency: MusicFrequency::Default,
             hide_lightning_flash: false,
             vignette: true,
+            clouds: CloudOption::Fancy,
             // `OptionInstance.createBoolean("options.ao", true, ..)`
             // (`Options.java:236`) — ON unless the file says otherwise.
             smooth_lighting: true,
@@ -143,6 +146,32 @@ pub const KEY_CHAT_LINKS_PROMPT: &str = "chatLinksPrompt";
 /// M282 — `options.vignette`'s key (`Options.java:1539`). Read, not
 /// written: Rewo has no control for it, so the line passes through.
 pub const KEY_VIGNETTE: &str = "vignette";
+/// `options.renderClouds`' key (`Options.java:1533`). Read, not written, as
+/// [`KEY_VIGNETTE`].
+pub const KEY_RENDER_CLOUDS: &str = "renderClouds";
+
+/// `CloudStatus`: `OFF("false")`, `FAST("fast")`, `FANCY("true")`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CloudOption {
+    Off,
+    Fast,
+    #[default]
+    Fancy,
+}
+
+impl CloudOption {
+    /// The option's file value: `CloudStatus.CODEC`'s serialized names
+    /// (quoted, as every string option is), or the `Codec.BOOL` alternative
+    /// (`true` FANCY, `false` OFF).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().trim_matches('"') {
+            "true" => Some(Self::Fancy),
+            "fast" => Some(Self::Fast),
+            "false" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
 /// `options.hideLightningFlashes`' key in the file.
 pub const KEY_HIDE_LIGHTNING: &str = "hideLightningFlashes";
 /// `options.ambientOcclusion`'s key in the file — the two-letter `ao`, not
@@ -234,6 +263,13 @@ impl Options {
                     None => false,
                 }
             }
+            KEY_RENDER_CLOUDS => match CloudOption::parse(raw) {
+                Some(c) => {
+                    self.clouds = c;
+                    true
+                }
+                None => false,
+            },
             KEY_VIGNETTE => match raw.trim() {
                 "true" => {
                     self.vignette = true;
@@ -526,6 +562,18 @@ mod tests {
         for line in existing.lines() {
             assert_eq!(out.matches(line).count(), 1, "{line}");
         }
+    }
+
+    #[test]
+    fn render_clouds_reads_every_cloud_status_form() {
+        // `CloudStatus`: OFF "false", FAST "fast", FANCY "true"; the file
+        // quotes them, and `Codec.BOOL` is accepted as an alternative.
+        let read = |line: &str| Options::parse(line).clouds;
+        assert_eq!(read("renderClouds:\"false\""), CloudOption::Off);
+        assert_eq!(read("renderClouds:\"fast\""), CloudOption::Fast);
+        assert_eq!(read("renderClouds:\"true\""), CloudOption::Fancy);
+        assert_eq!(read("renderClouds:false"), CloudOption::Off);
+        assert_eq!(read(""), CloudOption::Fancy, "the default");
     }
 
     /// **The serialized name is the UPPERCASE constructor argument.**

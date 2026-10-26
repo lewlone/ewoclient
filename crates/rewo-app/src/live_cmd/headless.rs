@@ -597,6 +597,7 @@ pub(super) fn run_headless(
         &mut weather_assets,
         1.0,
         None,
+        rewo_net::options::CloudOption::default(),
     );
     apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
     apply_render_distance_fog(&mut world_renderer, &session);

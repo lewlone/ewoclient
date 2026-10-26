@@ -176,6 +176,22 @@ pub fn resolve_local_game_mode(
     told.or(listed)
 }
 
+/// `Component.translatable("mount.onboard", keyShift.getTranslatedKeyMessage())`
+/// as the NBT component the action bar holds.
+pub fn mount_onboard_message() -> rewo_proto::nbt::Nbt {
+    use rewo_proto::nbt::Nbt;
+    Nbt::Compound(vec![
+        ("translate".into(), Nbt::String("mount.onboard".into())),
+        (
+            "with".into(),
+            Nbt::List(vec![Nbt::Compound(vec![(
+                "translate".into(),
+                Nbt::String("key.keyboard.left.shift".into()),
+            )])]),
+        ),
+    ])
+}
+
 /// `UUID.toString()` — the dashed lowercase 8-4-4-4-12 form, which is what
 /// `Entity.stringUUID` holds and therefore what a non-player entity's
 /// scoreboard membership is keyed by (M70).
@@ -4425,6 +4441,26 @@ impl PlaySession {
         let (Ok(eid), Ok(event)) = (r.i32(), r.i8()) else {
             return;
         };
+        // `LivingEntity.handleEntityEvent(3)` plays the death sound through
+        // `Entity.playSound`, i.e. `level.playSound(null, ..)`, which the
+        // client plays only for its own player (`Player.playSound` excepts
+        // itself, and the server sends that sound to everyone else). A mob's
+        // hurt and death sounds arrive as sound packets. The local player is
+        // not in the entity table, so its death sound is played here.
+        if event == 3 && Some(eid) == self.player_id {
+            let (a, b) = (self.player_rng.next_float(), self.player_rng.next_float());
+            let ev = crate::sounds::SoundEvent::Local(crate::sounds::LocalSound {
+                name: "minecraft:entity.player.death".into(),
+                source: crate::sounds::SoundSource::Players,
+                x: self.player.x,
+                y: self.player.y,
+                z: self.player.z,
+                volume: 1.0,
+                pitch: (a - b) * 0.2 + 1.0,
+            });
+            self.push_sound_event(ev);
+            return;
+        }
         // `packet.getEntity(this.level)` — `if (entity != null)`.
         let Some(type_id) = self.world.entities.get(eid).map(|e| e.type_id) else {
             return;
@@ -4765,6 +4801,12 @@ impl PlaySession {
                 // has no such field: a mount is a rider list that now names
                 // you (M68).
                 self.start_riding_sound();
+                // `handleSetEntityPassengersPacket`: newly mounted, the action
+                // bar says how to get off, with the sneak key's name (Rewo has
+                // no rebinding, so the default left shift).
+                self.hud
+                    .titles
+                    .set_overlay_message(mount_onboard_message(), false);
             }
             (true, false) => {
                 self.motion_stats.local_dismounts += 1;

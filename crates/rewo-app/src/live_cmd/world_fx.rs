@@ -521,6 +521,8 @@ pub(super) fn apply_weather(
     // immediately" — the headless path draws a single frame after settling,
     // where an eased multiplier would still be near zero.
     _delta_ticks: Option<f32>,
+    // `options.renderClouds`: `LevelRenderer` draws no clouds when OFF.
+    clouds: rewo_net::options::CloudOption,
 ) {
     let eye = eye_f64(session);
     let game_time = session.game_time();
@@ -541,8 +543,13 @@ pub(super) fn apply_weather(
     // `ARGB.alpha(cloudColor) > 0` is vanilla's whole test — no dimension name
     // is consulted, and neither is one here.
     let cloud_alpha = ((color as u32) >> 24) & 0xFF;
-    match (&w.clouds, cloud_alpha > 0) {
-        (Some(tex), true) => {
+    let status = match clouds {
+        rewo_net::options::CloudOption::Off => None,
+        rewo_net::options::CloudOption::Fast => Some(rewo_gpu::clouds::CloudStatus::Fast),
+        rewo_net::options::CloudOption::Fancy => Some(rewo_gpu::clouds::CloudStatus::Fancy),
+    };
+    match (&w.clouds, cloud_alpha > 0, status) {
+        (Some(tex), true, Some(status)) => {
             let placement = rewo_gpu::clouds::placement(
                 eye,
                 height,
@@ -558,7 +565,7 @@ pub(super) fn apply_weather(
                     placement.relative_pos,
                     placement.cell_x,
                     placement.cell_z,
-                    rewo_gpu::clouds::CloudStatus::Fancy,
+                    status,
                     rewo_gpu::clouds::radius_cells(CLOUD_RANGE_CHUNKS),
                 );
                 w.cached = Some((faces, key.0, key.1, key.2));
@@ -578,7 +585,7 @@ pub(super) fn apply_weather(
             }
         }
         _ => {
-            // No texture, or a transparent cloud colour: draw nothing rather
+            // No texture, a transparent cloud colour, or the option OFF: draw nothing rather
             // than leaving the previous dimension's deck hanging in the sky.
             let _ = wr.set_clouds(
                 gpu,

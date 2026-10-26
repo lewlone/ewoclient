@@ -3252,6 +3252,7 @@ impl LiveApp {
                 alpha,
                 // 20 ticks per second — .
                 Some(dt * 20.0),
+                self.options.clouds,
             );
             apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
             apply_render_distance_fog(&mut state.world_renderer, session);

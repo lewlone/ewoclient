@@ -1,0 +1,48 @@
+# Hurt and death sounds. A mob's arrive as sound packets: the server's `playHurtSound` broadcasts
+# them, and the client's own `handleDamageEvent` / event 3 `Entity.playSound` plays nothing for a
+# mob (`level.playSound(null, ..)` plays only for the local player). The local player's own are the
+# client's (`Player.playSound` excepts itself), so the run ends with `/kill @s`.
+# NoAI mobs with 12 health under a frozen world, hit twice each with a stone axe (9 damage, no
+# sweep) after a full cooldown, all within the 3-block survival reach. A baby pig checks the
+# baby sound set.
+name: rewo_combat
+description: Hit a cow, a zombie and a baby pig until they die, then die - hurt and death sounds.
+
+world:
+  server_commands:
+    - setworldspawn 0 -60 0
+    - gamerule mob_drops false
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 20]
+  commands:
+    - clear @s
+    - gamemode survival @s
+    - give @s minecraft:stone_axe
+    - 'summon minecraft:cow 0.5 -60 2.0 {NoAI:1b,Health:12f,Rotation:[180f,0f]}'
+    - 'summon minecraft:zombie -1.0 -60 2.0 {NoAI:1b,Health:12f,Rotation:[180f,0f],equipment:{head:{id:"minecraft:leather_helmet",count:1}}}'
+    - 'summon minecraft:pig 2.0 -60 2.0 {NoAI:1b,Health:12f,Age:-24000,Rotation:[180f,0f]}'
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, look: {yaw: 0, pitch: 25}}
+  - {at: 2, click: attack}
+  - {at: 2, expect_sound: minecraft:entity.cow.hurt, window: 4}
+  - {at: 30, click: attack}
+  - {at: 30, expect_sound: minecraft:entity.cow.death, window: 6}
+  - {at: 40, look: {yaw: 45, pitch: 25}}
+  - {at: 42, click: attack}
+  - {at: 42, expect_sound: minecraft:entity.zombie.hurt, window: 4}
+  - {at: 44, capture: zombie_hit, checklist: "a zombie in a leather cap flashing red after the hit"}
+  - {at: 70, click: attack}
+  - {at: 70, expect_sound: minecraft:entity.zombie.death, window: 6}
+  - {at: 80, look: {yaw: -45, pitch: 33}}
+  - {at: 82, click: attack}
+  - {at: 82, expect_sound: minecraft:entity.baby_pig.hurt, window: 4}
+  - {at: 110, click: attack}
+  - {at: 110, expect_sound: minecraft:entity.baby_pig.death, window: 6}
+  - {at: 130, command: "kill @s"}
+  - {at: 130, expect_sound: minecraft:entity.player.death, window: 6}
+end_tick: 140
