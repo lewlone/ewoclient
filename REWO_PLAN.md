@@ -4021,6 +4021,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M421 — fog bands follow `linear_fog_value` (2026-10-26)
+
+Found while scoping the hand's fog. Every Rewo fog term divided by `max(end − start, 1.0)`: the terrain (`world.frag`), water (`water.frag`) and M412's four entity shaders. Vanilla's `fog.glsl` `linear_fog_value` has no such floor: 0 at or before the start, 1 at or past the end, linear between. The floor only bites a band narrower than a block, which is exactly the near environmental fogs Rewo does not have yet (lava's 0.25..1, powder snow's 0..2 in part) and would have halved them. All six shaders now share vanilla's piecewise function (an empty band, as the disabled `[1e9, 1e9 + 1]` is in f32, is a step that never fires). **lightmapshot case 9(e)**: two environmental bands from one start, 0.75 and 1.0 wide, both straddling the quad; the fractions read back off the blue channel must stand at 4/3 (measured 1.337), which the floor makes 1 (a mutant restoring it read 1.000 and failed). Frames 33, probes 89.
+
 ### M420 — an enchanted worn head item shimmers (2026-10-26)
 
 From the 2026-10-20 follow-ups ("a worn item shows no enchantment glint"). `CustomHeadLayer`'s item branch submits the head stack through `ItemStackRenderState.submit`, which adds the entity glint for a foil stack (a Curse of Binding carved pumpkin, a banner); the skull branch (`SkullBlockRenderer.submitSkull`) submits none. `WornHead` carries the stack's `foil` (the equipment packet's M50 flag) on the item branch, and `emit_worn_head` pushes its placed quads to the item glint sink, as a mob's held item does. **mobtexshot m125** (the worn pumpkin with and without foil: 1260 px of sheen).

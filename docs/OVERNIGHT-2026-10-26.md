@@ -29,7 +29,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   chests on the body), M418 (enchanted armour and held items shimmer in
   the inventory preview), M419 (dropped and framed tridents, spyglasses
   and spears show their flat sprite, as vanilla's do), M420 (an enchanted
-  item worn on the head shimmers); the
+  item worn on the head shimmers), M421 (fog bands use vanilla's
+  `linear_fog_value`; Rewo had a 1-block floor on their width); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -121,7 +122,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `5fdc8e9e` | **M417** — horses rear; mobtexshot m123 |
 | `6286f464` | **M418** — the inventory preview's glints; capeshot p8 |
 | `294fadb5` | **M419** — dropped and framed tridents, spyglasses and spears are sprites; itemframeshot b6, p12, mobtexshot m124 |
-| (next) | **M420** — an enchanted worn head item shimmers; mobtexshot m125 |
+| `0e3bd12e` | **M420** — an enchanted worn head item shimmers; mobtexshot m125 |
+| (next) | **M421** — fog bands follow `linear_fog_value`; lightmapshot 9(e) |
 
 ## Flakes
 
@@ -167,6 +169,12 @@ major bumps, so the next weekly group arrives without it.
 - ~~Remote players' motion is applied directly~~: M415.
 - ~~Baby humanoids wear no armour~~: M416. Found on the way: M403's baby
   elytra was 12 px too high (fixed there too).
+- **Rewo has only the atmospheric (rain) environmental fog.** Vanilla's
+  `FogRenderer` picks the first applicable of lava, powder snow,
+  blindness, darkness, water and atmospheric (`FogEnvironment`), each with
+  its own band and colour, plus `getWaterVision`'s ramp; Rewo has none of
+  the first five, so being under water, in lava or blinded looks like
+  open air. Next (M422), after M421 made the band formula vanilla's.
 - ~~Entities take no fog at all~~: done in M412. Left from it: the
   first-person hand stays unfogged. Vanilla's hand inherits the world fog
   (nothing resets it after the level), so inside lava, water, powder snow

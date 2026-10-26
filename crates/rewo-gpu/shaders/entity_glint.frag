@@ -46,15 +46,27 @@ layout(push_constant) uniform Fog {
 
 layout(location = 3) in vec3 v_worldpos;
 
+// M421 — `fog.glsl`'s `linear_fog_value`: piecewise, with no floor on the
+// band's width (the 1-block floor Rewo divided by halved lava's 0.25..1 band;
+// an empty band, start == end, is a step).
+float linear_fog_value(float d, float s, float e) {
+    if (d <= s) {
+        return 0.0;
+    } else if (d >= e) {
+        return 1.0;
+    }
+    return (d - s) / (e - s);
+}
+
 float fog_render() {
     vec3 rel = v_worldpos - fog.cam_fog.xyz;
     float cyl = max(length(rel.xz), abs(rel.y));
-    return clamp((cyl - fog.cam_fog.w) / max(fog.fog_col.w - fog.cam_fog.w, 1.0), 0.0, 1.0);
+    return linear_fog_value(cyl, fog.cam_fog.w, fog.fog_col.w);
 }
 
 float fog_env() {
     float dist = length(v_worldpos - fog.cam_fog.xyz);
-    return clamp((dist - fog.env_fog.x) / max(fog.env_fog.y - fog.env_fog.x, 1.0), 0.0, 1.0);
+    return linear_fog_value(dist, fog.env_fog.x, fog.env_fog.y);
 }
 
 float fog_amount() {

@@ -121,13 +121,13 @@ pub fn run(args: LightmapshotArgs) -> Result<(), String> {
 /// alone proves only that frames were read back, so [`EXPECTED_PROBES`] pins the
 /// comparisons that graded them. Update both, and say why, when a case is added
 /// or removed on purpose.
-const EXPECTED_FRAMES: usize = 31;
+const EXPECTED_FRAMES: usize = 33;
 static FRAMES_GRADED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// How many failure conditions this gate evaluates (every `PROBES.bad(..)`
 /// call), measured by running it. A section that renders but stops comparing, a
 /// loop that runs fewer times, or a deleted `if` moves this and fails the gate.
-const EXPECTED_PROBES: usize = 87;
+const EXPECTED_PROBES: usize = 89;
 static PROBES: crate::probes::ProbeCounter = crate::probes::ProbeCounter::new();
 
 /// `Offscreen::read_rgba` that also counts the frame toward [`EXPECTED_FRAMES`].
@@ -987,6 +987,51 @@ fn run_cases(
             failures.push(format!(
                 "fog-weak-env: a nearly-disabled environmental band changed the result to \
                  {weak:?} from {want_max:?} — a max cannot be reduced by its smaller term"
+            ));
+        }
+
+        // (e) M421 — `linear_fog_value` has no floor on a band's width. Two
+        // environmental bands from the same start, 0.75 blocks wide (vanilla
+        // lava's width, 0.25..1) and 1.0 wide, both straddling the quad: the
+        // fractions into them are (d - s)/0.75 and (d - s)/1, so their ratio
+        // is 4/3 whatever the sampled pixel's exact distance. Dividing by
+        // `max(width, 1)`, as Rewo did until M421, makes it 1. The fraction
+        // is read back off the blue channel: the clear quad is white and the
+        // fog's blue is 0, so linear blue is `1 - f`.
+        wr.set_fog(1.0e6, 1.0e6 + 1.0);
+        let mut band = |width: f32, name: &str| -> Result<f32, String> {
+            let px = render_quad(
+                gpu,
+                off,
+                wr,
+                view_proj,
+                draw,
+                name,
+                0,
+                15,
+                state([DIST - 0.5, DIST - 0.5 + width]),
+                false,
+                args,
+            )?;
+            let clear_b = srgb_to_linear(clear[2] as f32 / 255.0);
+            let b = srgb_to_linear(px[2] as f32 / 255.0);
+            Ok((clear_b - b) / (clear_b - FOG_LINEAR[2]))
+        };
+        let f_narrow = band(0.75, "fog-narrow-env")?;
+        let f_wide = band(1.0, "fog-unit-env")?;
+        let ratio = f_narrow / f_wide.max(1e-6);
+        println!(
+            "[lightmapshot] fog-narrow-env: f {f_narrow:.3} in the 0.75 band, {f_wide:.3} in              the 1.0 band -> ratio {ratio:.3} (vanilla 4/3, a 1-block floor 1)"
+        );
+        if PROBES.bad((ratio - 4.0 / 3.0).abs() > 0.08) {
+            failures.push(format!(
+                "fog-narrow-env: the 0.75-block band reads {f_narrow:.3} against the 1-block                  band's {f_wide:.3}, ratio {ratio:.3}; `linear_fog_value` makes it 4/3, a                  floor on the width 1"
+            ));
+        }
+        // Both straddle the quad, or the ratio grades a saturated band.
+        if PROBES.bad(!(0.05..0.95).contains(&f_narrow) || !(0.05..0.95).contains(&f_wide)) {
+            failures.push(format!(
+                "fog-narrow-env is vacuous: fractions {f_narrow:.3} / {f_wide:.3} are not                  inside their bands"
             ));
         }
 

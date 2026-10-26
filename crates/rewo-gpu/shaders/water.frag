@@ -35,6 +35,18 @@ layout(location = 3) in vec3 v_worldpos;
 
 layout(location = 0) out vec4 out_color;
 
+// M421 — `fog.glsl`'s `linear_fog_value`: piecewise, with no floor on the
+// band's width (the 1-block floor Rewo divided by halved lava's 0.25..1 band;
+// an empty band, start == end, is a step).
+float linear_fog_value(float d, float s, float e) {
+    if (d <= s) {
+        return 0.0;
+    } else if (d >= e) {
+        return 1.0;
+    }
+    return (d - s) / (e - s);
+}
+
 void main() {
     // `v_layer` is flat, so the branch is uniform over the primitive (and its
     // quads): the implicit-LOD samples below stay well defined.
@@ -55,8 +67,8 @@ void main() {
     // `total_fog_value` — the MAX of the render-distance band (the push
     // block's, which dissolves the chunk edge into the sky) and the
     // environmental one (which rain thickens). Vanilla takes the same max.
-    float fog = clamp((cyl - pc.cam_fog.w) / max(pc.fog_col.w - pc.cam_fog.w, 1.0), 0.0, 1.0);
-    float env = clamp((dist - lmx.env_fog.x) / max(lmx.env_fog.y - lmx.env_fog.x, 1.0), 0.0, 1.0);
+    float fog = linear_fog_value(cyl, pc.cam_fog.w, pc.fog_col.w);
+    float env = linear_fog_value(dist, lmx.env_fog.x, lmx.env_fog.y);
     fog = max(fog, env);
     rgb = mix(rgb, pc.fog_col.rgb, fog);
     out_color = vec4(rgb, c.a);
