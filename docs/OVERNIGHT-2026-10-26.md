@@ -157,7 +157,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
 | `174b195b` | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
 | `fda4f957` | **M438** — the previews take vanilla's `ENTITY_IN_UI` lights; capeshot p10 |
-| (next) | **Merge** of `claude/rewo-playtest-harness-1eece5`: the horse clocks and cloud options unified, villager outfits in the gamma chain, m77 framed |
+| `a1ca707b` | **Merge** of `claude/rewo-playtest-harness-1eece5`: the horse clocks and cloud options unified, villager outfits in the gamma chain, m77 framed |
 
 ## The playtest branch, merged here
 
