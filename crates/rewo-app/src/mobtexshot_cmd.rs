@@ -105,7 +105,10 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 126;
+const EXPECTED_WITNESSES: usize = 127;
+/// M428 — m127's floor: rows a foal's top rises rearing and drops grazing.
+/// Before M428 the foal was static (0 by construction).
+const FOAL_ROWS_MIN: usize = 2;
 /// M426 — m126's floor: how many pixel rows a grazing horse's top drops
 /// below a standing one's from the side (its raised head goes down).
 const GRAZE_TOP_MIN: usize = 4;
@@ -7591,30 +7594,45 @@ fn run_check(
         Vec3::new(6.0, 1.4, 0.0),
         Vec3::new(0.0, 1.2, 0.0),
     )?;
-    let mut rhshot = |stand: f32, saddled: bool, eat: f32| -> Result<Vec<u8>, String> {
-        let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
-        layers[0] = Some((SADDLE, [1.0, 1.0, 1.0]));
-        let d = EntityDraw {
-            saddle: saddled.then_some(rewo_gpu::entities::ArmorPiece {
-                layers,
-                ..Default::default()
-            }),
-            mob: rewo_gpu::mobs::MobCombat {
-                stand_anim: stand,
-                eat_anim: eat,
-                ..Default::default()
-            },
-            ..neutral_draw(EntityModelKind::Horse)
+    let mut rhshot =
+        |kind: EntityModelKind, stand: f32, saddled: bool, eat: f32| -> Result<Vec<u8>, String> {
+            let mut layers = [None; rewo_gpu::entities::MAX_ARMOR_SUBLAYERS];
+            layers[0] = Some((SADDLE, [1.0, 1.0, 1.0]));
+            let d = EntityDraw {
+                saddle: saddled.then_some(rewo_gpu::entities::ArmorPiece {
+                    layers,
+                    ..Default::default()
+                }),
+                mob: rewo_gpu::mobs::MobCombat {
+                    stand_anim: stand,
+                    eat_anim: eat,
+                    ..Default::default()
+                },
+                ..neutral_draw(kind)
+            };
+            rhst.wr.set_entities(&[d], rhst.right, rhst.up, 0.0);
+            rhst.off
+                .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
+            rhst.off.read_rgba(gpu)
         };
-        rhst.wr.set_entities(&[d], rhst.right, rhst.up, 0.0);
-        rhst.off
-            .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
-        rhst.off.read_rgba(gpu)
-    };
-    let (rh_stand, rh_rear) = (rhshot(0.0, false, 0.0)?, rhshot(1.0, false, 0.0)?);
-    let (rh_stand_s, rh_rear_s) = (rhshot(0.0, true, 0.0)?, rhshot(1.0, true, 0.0)?);
+    let horse = EntityModelKind::Horse;
+    let (rh_stand, rh_rear) = (
+        rhshot(horse, 0.0, false, 0.0)?,
+        rhshot(horse, 1.0, false, 0.0)?,
+    );
+    let (rh_stand_s, rh_rear_s) = (
+        rhshot(horse, 0.0, true, 0.0)?,
+        rhshot(horse, 1.0, true, 0.0)?,
+    );
     // m126 — M426: the same horse grazing (`eatAnimation` 1).
-    let rh_graze = rhshot(0.0, false, 1.0)?;
+    let rh_graze = rhshot(horse, 0.0, false, 1.0)?;
+    // m127 — M428: a foal standing, rearing and grazing.
+    let foal = EntityModelKind::HorseBaby;
+    let (fo_stand, fo_rear, fo_graze) = (
+        rhshot(foal, 0.0, false, 0.0)?,
+        rhshot(foal, 1.0, false, 0.0)?,
+        rhshot(foal, 0.0, false, 1.0)?,
+    );
     rhst.wr.set_entities(&[], rhst.right, rhst.up, 0.0);
     rhst.off
         .render(gpu, Some((&mut rhst.wr, rhst.vp)), &ov, BG)?;
@@ -7624,6 +7642,8 @@ fn run_check(
         save_png(&rh_stand_s, cw, ch, &d.join("m123_horse_standing.png"))?;
         save_png(&rh_rear_s, cw, ch, &d.join("m123_horse_rearing.png"))?;
         save_png(&rh_graze, cw, ch, &d.join("m126_horse_grazing.png"))?;
+        save_png(&fo_rear, cw, ch, &d.join("m127_foal_rearing.png"))?;
+        save_png(&fo_graze, cw, ch, &d.join("m127_foal_grazing.png"))?;
     }
     let changed = |a: &[u8], b: &[u8]| -> Vec<usize> {
         a.as_chunks::<4>()
@@ -7647,6 +7667,15 @@ fn run_check(
     };
     let saddle_up = centroid(&rh_stand_s, &rh_stand) - centroid(&rh_rear_s, &rh_rear);
     let rows_down = top(&rh_graze).saturating_sub(top(&rh_stand));
+    let (fo_up, fo_down) = (
+        top(&fo_stand).saturating_sub(top(&fo_rear)),
+        top(&fo_graze).saturating_sub(top(&fo_stand)),
+    );
+    w.push(wit(
+        "m127.a_foal_rears_and_grazes",
+        fo_up >= FOAL_ROWS_MIN && fo_down >= FOAL_ROWS_MIN,
+        format!("rearing its top rises {fo_up} rows, grazing it drops {fo_down} (want >= {FOAL_ROWS_MIN} each)"),
+    ));
     w.push(wit(
         "m126.a_grazing_horse_lowers_its_head",
         rows_down >= GRAZE_TOP_MIN,

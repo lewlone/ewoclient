@@ -6212,7 +6212,7 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
         // (125° + sin(age)·0.05) + (1 − max(standing, eating))·(π/6 + look +
         // feeding·sin(age)·0.05)`, the yaw faded by the same factor outside
         // rearing, the group lowered `lerp(eating, −8·standing, 7)`.
-        EquineHead => {
+        EquineHead | EquineHeadFoal => {
             let (s, e) = (c.mob.stand_anim, c.mob.eat_anim);
             let look = c.pitch
                 + if c.amt > 0.2 {
@@ -6228,10 +6228,15 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
             rot[0] = x - PI / 6.0;
             let yaw = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
             rot[1] = s * yaw + free * yaw;
-            off = [0.0, -8.0 * s + e * (7.0 + 8.0 * s), 8.0 * s];
+            // `animateHeadPartsPlacement` (M428: the foal's own).
+            off = if anim == EquineHeadFoal {
+                [0.0, -2.0 * s + e * (2.0 + 2.0 * s), 2.0 * s]
+            } else {
+                [0.0, -8.0 * s + e * (7.0 + 8.0 * s), 8.0 * s]
+            };
         }
         EquineBody => rot[0] = c.mob.stand_anim * -PI / 4.0,
-        EquineLeg { hind, left } => {
+        EquineLeg { hind, left } | EquineLegFoal { hind, left } => {
             let s = c.mob.stand_anim;
             let walk = 1.0 - s;
             let leg = (c.f + PI).cos();
@@ -6242,13 +6247,20 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
                 (true, true) => PI / 12.0 * s - leg * 0.5 * c.amt * walk,
                 (true, false) => PI / 12.0 * s + leg * 0.5 * c.amt * walk,
             };
+            // `getLegStandingY/ZOffset` (M428: the foal's 4 and 0).
             if !hind {
-                off = [0.0, -12.0 * s, 4.0 * s];
+                off = if matches!(anim, EquineLegFoal { .. }) {
+                    [0.0, -4.0 * s, 0.0]
+                } else {
+                    [0.0, -12.0 * s, 4.0 * s]
+                };
             }
         }
-        EquineTail => {
+        EquineTail | EquineTailFoal => {
             rot[0] = c.amt * 0.75;
-            off = [0.0, c.amt, 2.0 * c.amt];
+            // × `ageScale` (M428: the foal's 0.5).
+            let k = if anim == EquineTailFoal { 0.5 } else { 1.0 };
+            off = [0.0, c.amt * k, 2.0 * c.amt * k];
         }
         // M365 — `TurtleModel.setupAnim` over `QuadrupedModel.setupAnim`.
         TurtleHead => {

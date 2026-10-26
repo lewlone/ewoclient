@@ -3401,9 +3401,8 @@ impl LiveApp {
                 // M424 — r230: frames that drew the water's fog (its band and
                 // colour) with the bot's eyes under r230's staged water.
                 #[cfg(feature = "gates")]
-                let r230_window = self.use_stage == 62;
                 if let Some(c) = self.check.as_mut() {
-                    if r230_window
+                    if self.use_stage == 62
                         && _fog_type == rewo_world::fog_env::FogType::Water
                         && _fog_plan.band.is_some_and(|b| b.end <= 96.0)
                         && _fog_plan.color.is_some()

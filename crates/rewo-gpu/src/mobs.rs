@@ -127,6 +127,16 @@ pub enum Anim {
     /// M417 — the equine body, `xRot` `standing · −π/4` (rearing); the
     /// tail, the saddle and a donkey's chests hang from it.
     EquineBody,
+    /// M428 — `BabyHorseModel`'s overrides of the three above: the head
+    /// group placed `lerp(eating, −2·standing, 2)` down and `2·standing`
+    /// back, the front legs rising 4 and not forward, the tail's offsets at
+    /// the foal's age scale (0.5; its −π/2 base is the part's rest).
+    EquineHeadFoal,
+    EquineLegFoal {
+        hind: bool,
+        left: bool,
+    },
+    EquineTailFoal,
     /// M365 — `TurtleModel.setupAnim` on top of `QuadrupedModel`'s: each
     /// flipper keeps the quadruped's `xRot` swing; on land the flippers
     /// sweep (`yRot`: front ∓cos(pos·5·lay)·8·speed·layAmp, hind
@@ -7583,80 +7593,96 @@ fn llama_baby() -> Model {
 }
 
 /// M339 — `BabyHorseModel.createBabyMesh(CubeDeformation.NONE)` (64 x 64):
-/// an 8 x 7 x 14 body with its tail, four 3 x 9 x 3 legs on the quadruped
-/// walk as Rewo's adult equine's, and the neck, head and two ears. Two rest
-/// angles are `AbstractEquineModel.setupAnim`'s, not the layer's: the neck
-/// (`head_parts`) at π/6 (the layer says 0.6109), and the tail at
-/// `getTailXRotOffset()` (-π/2 here) + π/6 = -π/3 (the layer says -0.7418).
-/// The head does not look, as the adult's does not; markings are not drawn,
-/// as the adult's are not; a foal wears no saddle or armour.
+/// an 8 x 7 x 14 body with its tail, four 3 x 9 x 3 legs, and the neck,
+/// head and two ears. Two rest angles are `AbstractEquineModel.setupAnim`'s,
+/// not the layer's: the neck (`head_parts`) at π/6 (the layer says 0.6109),
+/// and the tail at `getTailXRotOffset()` (-π/2 here) + π/6 = -π/3 (the layer
+/// says -0.7418). Markings are not drawn, as the adult's are not; a foal
+/// wears no saddle or armour.
+/// M428 — on parts, posed by `AbstractEquineModel.setupAnim` with
+/// `BabyHorseModel`'s overrides ([`Anim::EquineHeadFoal`] and kin): the
+/// neck group looks, rears and grazes, the body rears with the tail on it,
+/// and the legs take the equine walk (they took the quadruped's).
 fn horse_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([0.0, 12.5, 0.0]);
+    let neck = b.part_ext(
+        [0.0, 10.0, -6.0],
+        [PI / 6.0, 0.0, 0.0],
+        Anim::EquineHeadFoal,
+        1.0,
+        Option::None,
+    );
+    let body = b.part([0.0, 12.5, 0.0], Anim::EquineBody, 1.0);
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (0.0, 13.0),
         [-4.0, -3.5, -7.0],
         [8.0, 7.0, 14.0],
         0.0,
         false,
-        &[body],
+        NONE,
+    );
+    let tail = b.part_ext(
+        [0.0, -1.0, 7.0],
+        [-PI / 3.0, 0.0, 0.0],
+        Anim::EquineTailFoal,
+        1.0,
+        Some(body),
     );
     b.cube_f(
-        STATIC_PART,
+        tail,
         0,
         (24.0, 34.0),
         [-1.5, -1.5, -1.0],
         [3.0, 3.0, 8.0],
         0.0,
         false,
-        &[Fold::rot([-PI / 3.0, 0.0, 0.0], [0.0, -1.0, 7.0]), body],
+        NONE,
     );
-    let neck = Fold::rot([PI / 6.0, 0.0, 0.0], [0.0, 10.0, -6.0]);
     b.cube_f(
-        STATIC_PART,
+        neck,
         0,
         (30.0, 0.0),
         [-2.0, -6.0, -2.0],
         [4.0, 8.0, 4.0],
         0.0,
         false,
-        &[neck],
+        NONE,
     );
     let head = Fold::at([0.0, -6.0516, -0.2951]);
     b.cube_f(
-        STATIC_PART,
+        neck,
         0,
         (0.0, 0.0),
         [-3.0, -3.9484, -6.705],
         [6.0, 4.0, 9.0],
         0.0,
         false,
-        &[head, neck],
+        &[head],
     );
     for (x, z, z_rot, uv, min_z) in [
         (2.0, 1.9451, 0.2618, (0.0, 4.0), -0.8),
         (-2.0, 1.645, -0.2618, (0.0, 0.0), -0.5),
     ] {
         b.cube_f(
-            STATIC_PART,
+            neck,
             0,
             uv,
             [-1.0, -2.5, min_z],
             [2.0, 3.0, 1.0],
             0.0,
             false,
-            &[Fold::rot([0.0, 0.0, z_rot], [x, -4.2484, z]), head, neck],
+            &[Fold::rot([0.0, 0.0, z_rot], [x, -4.2484, z]), head],
         );
     }
-    for (pivot, anim, uv) in [
-        ([2.4, 16.0, 5.4], Anim::QuadHindLeft, (12.0, 46.0)),
-        ([-2.4, 16.0, 5.4], Anim::QuadHindRight, (0.0, 46.0)),
-        ([2.4, 16.0, -5.4], Anim::QuadFrontLeft, (12.0, 34.0)),
-        ([-2.4, 16.0, -5.4], Anim::QuadFrontRight, (0.0, 34.0)),
+    for (pivot, hind, left, uv) in [
+        ([2.4, 16.0, 5.4], true, true, (12.0, 46.0)),
+        ([-2.4, 16.0, 5.4], true, false, (0.0, 46.0)),
+        ([2.4, 16.0, -5.4], false, true, (12.0, 34.0)),
+        ([-2.4, 16.0, -5.4], false, false, (0.0, 34.0)),
     ] {
-        let leg = b.part(pivot, anim, 1.0);
+        let leg = b.part(pivot, Anim::EquineLegFoal { hind, left }, 1.0);
         b.cube(leg, 0, uv, [-1.5, -1.0, -1.5], [3.0, 9.0, 3.0], NONE);
     }
     b.finish(1.0)
@@ -17114,12 +17140,21 @@ mod equine_foal_rest_tests {
 
     /// M339 — `BabyHorseModel`: ten boxes; the neck at `setupAnim`'s π/6
     /// (not the layer's 0.6109) and the tail at -π/2 + π/6 (not -0.7418).
+    /// M428 — those are the parts' rest angles now (the anims add to them),
+    /// and the tail hangs from the body.
     #[test]
     fn the_horse_foal_rests_where_setup_anim_puts_it() {
         let m = horse_baby();
         assert_eq!(m.quads.len(), 10 * 6);
-        assert!((north_tilt(&m, ((34.0, 38.0), (4.0, 12.0))) - PI / 6.0).abs() < 1e-4);
-        assert!((north_tilt(&m, ((32.0, 35.0), (42.0, 45.0))) - PI / 3.0).abs() < 1e-4);
+        let part = |a: Anim| m.parts.iter().position(|p| p.anim == a).unwrap();
+        let (neck, tail, body) = (
+            part(Anim::EquineHeadFoal),
+            part(Anim::EquineTailFoal),
+            part(Anim::EquineBody),
+        );
+        assert!((m.parts[neck].rot[0] - PI / 6.0).abs() < 1e-6);
+        assert!((m.parts[tail].rot[0] + PI / 3.0).abs() < 1e-6);
+        assert_eq!(m.parts[tail].parent, Some(body as u16));
     }
 
     /// M339 — the donkey foal's tail: -π/12 on the box-less part

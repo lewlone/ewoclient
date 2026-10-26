@@ -4023,6 +4023,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M428 — foals walk, look, rear and graze (2026-10-26)
+
+From the follow-ups ("the baby horses' and donkeys' animation"). `BabyHorseModel` extends `HorseModel`, so `AbstractEquineModel.setupAnim` poses it with four overrides: the head group placed `lerp(eating, −2·standing, 2)` down and `2·standing` back, the front legs rising 4 and not forward, and the tail's base at −π/2 (its offsets at the foal's 0.5 age scale). Rewo's foal (M339) was static folds with the legs on the quadruped walk. It is now parts as vanilla's: the neck group (looking, rearing, grazing), the body (rearing) with the tail on it, the legs on the equine walk; `Anim::EquineHeadFoal`, `EquineLegFoal`, `EquineTailFoal` share the adult arms with the overrides. The baby donkey (and mule) is not done: `BabyDonkeyModel` hangs its legs and head from the body and overrides `setupAnim` itself. **mobtexshot m127** (rearing the foal's top rises 4 rows, grazing it drops 14; looked at); mobshot unchanged.
+
 ### M427 — the fog darkens toward the void (2026-10-26)
 
 M422 left `computeFogColor`'s starting darkness at 0, believing the client is not sent `voidDarknessOnsetRange`. It is derived: `ClientLevelData.voidDarknessOnsetRange()` is 1 in a flat world and 32 otherwise (`isFlat`, from the spawn info, which the session already keeps for the horizon), and the darkness is `clamp((range + minY − cameraY) / range, 0, 1)`: the fog darkens by its square over the last 32 blocks above the world's floor (below y −32 in a normal overworld), as blindness's last second and darkness's blend only ever raise it, and not in lava or powder snow. `fog_env::void_darkness`; `FogInputs::void_darkness`. **Unit test** (full at the floor, half 16 blocks up, none at 32; flat's one block; the open air's colour darkened by the square; a weaker darkness effect does not lift it).
