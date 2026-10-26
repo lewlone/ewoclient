@@ -168,7 +168,7 @@ pub(crate) fn preview_equipment<'a>(
         })
     });
     PreviewEquipment {
-        armor: super::entities::armor_keys_of(worn, items, equipment, |_, _, _| None),
+        armor: super::entities::armor_keys_of(worn, false, items, equipment, |_, _, _| None),
         wings: super::entities::wings_of(
             worn[1],
             cape_origin,

@@ -23,7 +23,9 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   terrain's fog; they never had), M413 (the opt-in wavy cape gives way to
   the vanilla one on a tilted body), M414 (the inventory preview wears
   your armour and elytra), M415 (remote players' motion eases in as
-  vanilla's does, instead of decaying like a mob's); the
+  vanilla's does, instead of decaying like a mob's), M416 (baby zombies,
+  husks, drowned, zombie villagers and piglins wear armour and elytras);
+  the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -110,7 +112,8 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `334342ca` | **M410** — the below-name line (a mannequin's description, below-name scores); labelshot f17 |
 | `3523cbfe` | **M411** — the cursor draws a carried stack's own copy |
 | `00f7edcc` | **M412** — entities take the terrain's fog; mobtexshot m120 |
-| (next) | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
+| `337d9ffd` | **M413–M415** — the wavy cape on a tilted body; the dressed inventory preview; remote players' motion lerp; capeshot y5, p6, p7 |
+| (next) | **M416** — baby humanoids wear armour and elytras (and M403's baby elytra offset); mobtexshot m121, m122 |
 
 ## Flakes
 
@@ -156,10 +159,8 @@ major bumps, so the next weekly group arrives without it.
 - ~~The inventory preview draws no armour~~: M414. Left: its trims and
   armour glint.
 - ~~Remote players' motion is applied directly~~: M415.
-- Baby humanoids wear no armour (and so no elytra) in Rewo. Vanilla has a
-  `humanoid_baby` equipment layer and three baby armour mesh sets
-  (`HumanoidModel`, `AbstractPiglinModel` and `ZombieVillagerModel`'s
-  `createBabyArmorMeshSet`, 64×64 sheets). Next.
+- ~~Baby humanoids wear no armour~~: M416. Found on the way: M403's baby
+  elytra was 12 px too high (fixed there too).
 - ~~Entities take no fog at all~~: done in M412. Left from it: the
   first-person hand stays unfogged (vanilla's hand fogs inside lava,
   water or blindness, where the environmental band starts near the eye).

@@ -1487,16 +1487,31 @@ pub fn cube_faces(
     grow: f32,
     mirror: bool,
 ) -> [(Facing, [[f32; 3]; 4], [[f32; 2]; 4]); 6] {
+    cube_faces_g(tex, min, dims, [grow; 3], mirror)
+}
+
+/// One face of a box: its label, corners and texel UVs.
+pub type CubeFace = (Facing, [[f32; 3]; 4], [[f32; 2]; 4]);
+
+/// M416 — [`cube_faces`] under a `CubeDeformation(x, y, z)` that grows each
+/// axis by its own amount (the baby armour's).
+pub fn cube_faces_g(
+    tex: (f32, f32),
+    min: [f32; 3],
+    dims: [f32; 3],
+    grow: [f32; 3],
+    mirror: bool,
+) -> [(Facing, [[f32; 3]; 4], [[f32; 2]; 4]); 6] {
     let (tex_u, tex_v) = tex;
     let [w, h, d] = dims;
     let [mut x0, mut y0, mut z0] = min;
     let (mut x1, mut y1, mut z1) = (x0 + w, y0 + h, z0 + d);
-    x0 -= grow;
-    y0 -= grow;
-    z0 -= grow;
-    x1 += grow;
-    y1 += grow;
-    z1 += grow;
+    x0 -= grow[0];
+    y0 -= grow[1];
+    z0 -= grow[2];
+    x1 += grow[0];
+    y1 += grow[1];
+    z1 += grow[2];
     if mirror {
         std::mem::swap(&mut x0, &mut x1);
     }
@@ -15438,6 +15453,165 @@ pub fn armor_boxes(slot: ArmorSlot) -> Vec<ArmorBox> {
     }
 }
 
+/// M416 — which baby armour mesh set a kind wears (`HumanoidArmorLayer`'s
+/// `babyModelSet`), or `None` for a kind with no baby armour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BabyArmorSet {
+    /// `HumanoidModel.createBabyArmorMeshSet(BABY_INNER, BABY_OUTER, ZERO)`:
+    /// the baby zombie, husk and drowned, and (through
+    /// `ZombieVillagerModel`, which inherits it) the baby zombie villager.
+    Humanoid,
+    /// `AbstractPiglinModel.createBabyArmorMeshSet(0.7, 0.7,
+    /// BABY_PIGLIN_ARMOR_ARM_OFFSET)`: the same mesh at an even 0.7 with
+    /// the arms set out `(0.5, −0.5, 0)` (its `removeEars` empties parts that
+    /// carry no cubes anyway). The baby piglin and zombified piglin.
+    Piglin,
+}
+
+pub fn baby_armor_set(kind: EntityModelKind) -> Option<BabyArmorSet> {
+    match kind {
+        EntityModelKind::ZombieBaby
+        | EntityModelKind::HuskBaby
+        | EntityModelKind::DrownedBaby
+        | EntityModelKind::ZombieVillagerBaby => Some(BabyArmorSet::Humanoid),
+        EntityModelKind::PiglinBaby | EntityModelKind::ZombifiedPiglinBaby => {
+            Some(BabyArmorSet::Piglin)
+        }
+        _ => None,
+    }
+}
+
+/// M416 — one box of a baby armour mesh. The armour is its own model
+/// (`BabyZombieModel` and kin), posed by the same `setupAnim` as the body:
+/// each part takes the body's same-named part's rotation, at the armour
+/// mesh's own pivot. `part` names the body part whose pose it borrows
+/// ([`armor_part`]); `""` is the static root (the waist, which no animation
+/// moves).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BabyArmorBox {
+    pub part: &'static str,
+    /// The armour part's own rest pivot (model px).
+    pub pivot: [f32; 3],
+    /// Texture offset into the 64x64 `humanoid_baby` sheet.
+    pub uv: (f32, f32),
+    pub min: [f32; 3],
+    pub dims: [f32; 3],
+    /// The `CubeDeformation`, per axis.
+    pub grow: [f32; 3],
+    pub mirror: bool,
+}
+
+/// M416 — `createBabyArmorMesh`'s boxes for one slot, as
+/// `createArmorMeshSet` keeps them: the head (`retainPartsAndChildren`;
+/// the hat is empty), and for the rest `retainExactParts` with
+/// `BABY_ARMOR_PARTS_PER_SLOT` — the body and arms (outer), the legs and
+/// waist (inner; the feet, the legs' children, cleared), the feet alone
+/// (outer). The legs and waist take `g.extend(−0.1)`.
+///
+/// **Vanilla's feet are crossed**: the Java variable `rightLeg` holds the
+/// `"left_leg"` part, so `right_foot` hangs off the left leg (and follows
+/// its swing) and `left_foot` off the right. Kept as vanilla has it.
+pub fn baby_armor_boxes(set: BabyArmorSet, slot: ArmorSlot) -> Vec<BabyArmorBox> {
+    let (inner, outer, arm) = match set {
+        BabyArmorSet::Humanoid => ([-0.1, 0.3, 0.3], [-0.1, 0.5, 0.3], [0.0; 3]),
+        BabyArmorSet::Piglin => ([0.7; 3], [0.7; 3], [0.5, -0.5, 0.0]),
+    };
+    let ext = |g: [f32; 3]| g.map(|c| c - 0.1);
+    let left_leg_pivot = [1.5, 20.0, 0.5];
+    let right_leg_pivot = [-1.5, 20.0, 0.5];
+    match slot {
+        ArmorSlot::Head => vec![BabyArmorBox {
+            part: "head",
+            pivot: [0.0, 15.0, 0.0],
+            uv: (0.0, 0.0),
+            min: [-4.5, -7.0, -4.5],
+            dims: [9.0, 8.0, 8.0],
+            grow: outer,
+            mirror: false,
+        }],
+        ArmorSlot::Chest => vec![
+            BabyArmorBox {
+                part: "body",
+                pivot: [0.0, 18.0, 0.0],
+                uv: (0.0, 17.0),
+                min: [-3.0, -3.0, -1.5],
+                dims: [6.0, 5.0, 3.0],
+                grow: outer,
+                mirror: false,
+            },
+            BabyArmorBox {
+                part: "right_arm",
+                pivot: [-3.5 - arm[0], 15.5 + arm[1], arm[2]],
+                uv: (30.0, 25.0),
+                min: [-1.0, 0.0, -1.53],
+                dims: [2.0, 5.0, 3.0],
+                grow: outer,
+                mirror: false,
+            },
+            BabyArmorBox {
+                part: "left_arm",
+                pivot: [3.5 + arm[0], 15.5 + arm[1], arm[2]],
+                uv: (30.0, 17.0),
+                min: [-1.0, 0.0, -1.53],
+                dims: [2.0, 5.0, 3.0],
+                grow: outer,
+                mirror: false,
+            },
+        ],
+        ArmorSlot::Legs => vec![
+            BabyArmorBox {
+                part: "",
+                pivot: [0.0, 19.0, 0.0],
+                uv: (0.0, 36.0),
+                min: [-3.0, -1.2, -1.49],
+                dims: [5.9, 2.0, 2.9],
+                grow: ext(inner),
+                mirror: false,
+            },
+            BabyArmorBox {
+                part: "left_leg",
+                pivot: left_leg_pivot,
+                uv: (18.0, 24.0),
+                min: [-2.0, -0.2, -2.0],
+                dims: [3.0, 4.0, 3.0],
+                grow: ext(inner),
+                mirror: false,
+            },
+            BabyArmorBox {
+                part: "right_leg",
+                pivot: right_leg_pivot,
+                uv: (18.0, 17.0),
+                min: [-1.0, -0.2, -2.0],
+                dims: [3.0, 4.0, 3.0],
+                grow: ext(inner),
+                mirror: false,
+            },
+        ],
+        ArmorSlot::Feet => vec![
+            // `right_foot`, a child of `"left_leg"` at a zero offset.
+            BabyArmorBox {
+                part: "left_leg",
+                pivot: left_leg_pivot,
+                uv: (0.0, 25.0),
+                min: [-2.0, 2.9, -2.0],
+                dims: [3.0, 1.0, 3.0],
+                grow: outer,
+                mirror: false,
+            },
+            // `left_foot`, mirrored, a child of `"right_leg"`.
+            BabyArmorBox {
+                part: "right_leg",
+                pivot: right_leg_pivot,
+                uv: (0.0, 29.0),
+                min: [-1.0, 2.9, -2.0],
+                dims: [3.0, 1.0, 3.0],
+                grow: outer,
+                mirror: true,
+            },
+        ],
+    }
+}
+
 pub fn player_model_for_hand(slim: bool) -> &'static Model {
     static WIDE: std::sync::OnceLock<Model> = std::sync::OnceLock::new();
     static SLIM: std::sync::OnceLock<Model> = std::sync::OnceLock::new();
@@ -16071,6 +16245,50 @@ mod baby_zombie_tests {
         assert_eq!(span(&vs), (9.0, 15.0));
         assert_eq!(husk_baby().scale, 1.0625);
         assert!(!wears_humanoid_armor(EntityModelKind::ZombieBaby));
+    }
+
+    /// M416 — the baby armour sets: which kinds wear which, the piglin's
+    /// arms set out by `BABY_PIGLIN_ARMOR_ARM_OFFSET`, the legs and waist at
+    /// `g.extend(−0.1)`, and vanilla's crossed feet (`right_foot` on the
+    /// left leg, mirrored `left_foot` on the right).
+    #[test]
+    fn baby_humanoids_wear_their_own_armour_mesh() {
+        assert_eq!(
+            baby_armor_set(EntityModelKind::ZombieVillagerBaby),
+            Some(BabyArmorSet::Humanoid)
+        );
+        assert_eq!(
+            baby_armor_set(EntityModelKind::ZombifiedPiglinBaby),
+            Some(BabyArmorSet::Piglin)
+        );
+        assert_eq!(baby_armor_set(EntityModelKind::Zombie), None);
+        let arm = |set| {
+            baby_armor_boxes(set, ArmorSlot::Chest)
+                .into_iter()
+                .find(|b| b.part == "right_arm")
+                .unwrap()
+        };
+        assert_eq!(arm(BabyArmorSet::Humanoid).pivot, [-3.5, 15.5, 0.0]);
+        assert_eq!(arm(BabyArmorSet::Piglin).pivot, [-4.0, 15.0, 0.0]);
+        assert_eq!(arm(BabyArmorSet::Piglin).grow, [0.7; 3]);
+        let legs = baby_armor_boxes(BabyArmorSet::Humanoid, ArmorSlot::Legs);
+        assert!(legs
+            .iter()
+            .any(|b| b.part.is_empty() && b.pivot == [0.0, 19.0, 0.0]));
+        for b in &legs {
+            let g = b.grow.map(|c| (c * 100.0).round() / 100.0);
+            assert_eq!(g, [-0.2, 0.2, 0.2], "{b:?}");
+        }
+        let feet = baby_armor_boxes(BabyArmorSet::Humanoid, ArmorSlot::Feet);
+        assert_eq!(
+            feet.iter()
+                .map(|b| (b.part, b.uv, b.mirror))
+                .collect::<Vec<_>>(),
+            [
+                ("left_leg", (0.0, 25.0), false),
+                ("right_leg", (0.0, 29.0), true)
+            ]
+        );
     }
 }
 

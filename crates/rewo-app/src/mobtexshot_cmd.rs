@@ -105,7 +105,15 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 120;
+const EXPECTED_WITNESSES: usize = 122;
+/// M416 — m121's floor: the pixels a full baby iron set adds to a baby
+/// zombie seen from the front. Before M416 a baby wore no armour (0 by
+/// construction).
+const BABY_ARMOR_MIN: usize = 300;
+/// M416 — m122's share (out of 100) of a baby elytra's pixel rows that lie
+/// within the baby's own silhouette rows. Without the baby transformer's
+/// 12 px drop the wings sat above its head.
+const BABY_WINGS_IN_ROWS: usize = 95;
 /// M412 — m120's linear fog colour: a mid colour unlike any pig texel and
 /// unlike [`BG`], so a fogged pixel is told from an unfogged one and from the
 /// clear colour.
@@ -439,6 +447,20 @@ fn srgb_encode(c: f32) -> u8 {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     };
     (s * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8
+}
+
+/// M416 — `c` or a colour one step from it per channel is in `set`.
+fn near_producible(set: &HashSet<u32>, c: u32) -> bool {
+    let ch = |k: u32| ((c >> k) & 0xFF) as i32;
+    (-1..=1).any(|dr| {
+        (-1..=1).any(|dg| {
+            (-1..=1).any(|db| {
+                let (r, g, b) = (ch(16) + dr, ch(8) + dg, ch(0) + db);
+                [r, g, b].iter().all(|v| (0..=255).contains(v))
+                    && set.contains(&pack(r as u8, g as u8, b as u8))
+            })
+        })
+    })
 }
 
 fn pack(r: u8, g: u8, b: u8) -> u32 {
@@ -7481,6 +7503,177 @@ fn run_check(
         format!(
             "{} pig px (want >= {FOG_PIG_MIN}); past the band {full_ok} are the fog colour {want:?}; inside it {part_mixed} are a mix (want >= 90%)",
             pig.len()
+        ),
+    ));
+
+    // m121 — M416: a baby zombie in iron, on the `humanoid_baby` sheet and
+    // mesh. Each slot alone adds pixels (a box whose part lookup missed
+    // would add none), and every pixel the full set changes is a colour the
+    // jar's baby iron sheet can produce.
+    let baby_iron = baked
+        .equipment
+        .layers(
+            "minecraft:iron",
+            rewo_data::equipment::ArmorLayer::HumanoidBaby,
+        )
+        .first()
+        .map(|l| l.key.clone())
+        .ok_or("no iron humanoid_baby armour layer in the jar")?;
+    let baby_sheet = baked
+        .equipment
+        .textures
+        .iter()
+        .find(|t| t.key == baby_iron)
+        .map(|t| producible(&t.rgba))
+        .ok_or("the baby iron sheet was not decoded")?;
+    let baby_wings_key = baked
+        .equipment
+        .layers("minecraft:elytra", rewo_data::equipment::ArmorLayer::Wings)
+        .first()
+        .map(|l| l.key.clone())
+        .ok_or("no elytra wings layer in the jar")?;
+    let mut bast = stage_from(
+        gpu,
+        baked,
+        cw,
+        ch,
+        Vec3::new(0.0, 0.55, 2.0),
+        Vec3::new(0.0, 0.45, 0.0),
+    )?;
+    let mut bashot = |slots: [bool; 4], wings: bool| -> Result<Vec<u8>, String> {
+        let piece = rewo_gpu::entities::ArmorPiece {
+            layers: [Some((baby_iron.as_str(), [1.0; 3])), None],
+            trim: None,
+            foil: false,
+        };
+        let d = EntityDraw {
+            armor: slots.map(|on| on.then_some(piece)),
+            ..neutral_draw(EntityModelKind::ZombieBaby)
+        };
+        let d = if wings {
+            EntityDraw {
+                yaw: 180.0,
+                mob: rewo_gpu::mobs::MobCombat {
+                    is_baby: true,
+                    ..d.mob
+                },
+                wings: Some(rewo_gpu::entities::WingsDraw {
+                    texture: rewo_gpu::entities::WingsTexture::Equipment(baby_wings_key.as_str()),
+                    foil: false,
+                    rot: rewo_world::glide::ELYTRA_REST,
+                    crouching: false,
+                }),
+                ..d
+            }
+        } else {
+            d
+        };
+        bast.wr.set_entities(&[d], bast.right, bast.up, 0.0);
+        bast.off
+            .render(gpu, Some((&mut bast.wr, bast.vp)), &ov, BG)?;
+        bast.off.read_rgba(gpu)
+    };
+    let ba_bare = bashot([false; 4], false)?;
+    let ba_full = bashot([true; 4], false)?;
+    let mut ba_slot = [0usize; 4];
+    for (i, n) in ba_slot.iter_mut().enumerate() {
+        let mut on = [false; 4];
+        on[i] = true;
+        let f = bashot(on, false)?;
+        *n = f
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(ba_bare.as_chunks::<4>().0)
+            .filter(|(a, b)| a[..3] != b[..3])
+            .count();
+    }
+    // m122 — the same baby from behind, bare and in an elytra at rest.
+    let wb_wings = bashot([false; 4], true)?;
+    let wb_bare = {
+        let d = EntityDraw {
+            yaw: 180.0,
+            ..neutral_draw(EntityModelKind::ZombieBaby)
+        };
+        bast.wr.set_entities(&[d], bast.right, bast.up, 0.0);
+        bast.off
+            .render(gpu, Some((&mut bast.wr, bast.vp)), &ov, BG)?;
+        bast.off.read_rgba(gpu)?
+    };
+    bast.wr.set_entities(&[], bast.right, bast.up, 0.0);
+    bast.off
+        .render(gpu, Some((&mut bast.wr, bast.vp)), &ov, BG)?;
+    let ba_empty = bast.off.read_rgba(gpu)?;
+    bast.destroy(gpu);
+    if let Some(d) = &args.out_dir {
+        save_png(&ba_full, cw, ch, &d.join("m121_baby_iron.png"))?;
+        save_png(&wb_wings, cw, ch, &d.join("m122_baby_elytra.png"))?;
+    }
+    let added: Vec<(usize, u32, u32)> = ba_full
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(ba_bare.as_chunks::<4>().0)
+        .enumerate()
+        .filter(|(_, (a, b))| a[..3] != b[..3])
+        .map(|(i, (a, b))| (i, pack(a[0], a[1], a[2]), pack(b[0], b[1], b[2])))
+        .collect();
+    let strays: Vec<String> = added
+        .iter()
+        // Within one step per channel: on a face seen almost edge-on (the
+        // helmet's sides from in front) the perspective-interpolated shade
+        // drifts a fraction of a percent at the sliver's extreme
+        // barycentrics, a step either way (measured: 133 for 134, 197 for
+        // 196). A texel from the wrong sheet or place is a different colour
+        // altogether.
+        .filter(|(_, c, _)| !near_producible(&baby_sheet, *c))
+        .map(|(i, c, was)| {
+            format!(
+                "#{c:06X} at ({}, {}) over #{was:06X}",
+                i % cw as usize,
+                i / cw as usize
+            )
+        })
+        .collect();
+    let stray = strays.len();
+    w.push(wit(
+        "m121.a_baby_zombie_wears_the_baby_armour_mesh_and_sheet",
+        added.len() >= BABY_ARMOR_MIN && stray == 0 && ba_slot.iter().all(|&n| n > 0),
+        format!(
+            "a full iron set adds {} px (want >= {BABY_ARMOR_MIN}), {stray} of them not producible (within a step) by {baby_iron} {:?}; head, chest, legs, feet alone add {ba_slot:?} (want each > 0)",
+            added.len(),
+            &strays[..stray.min(4)]
+        ),
+    ));
+    let rows = |f: &[u8], against: &[u8]| -> Vec<usize> {
+        let mut r: Vec<usize> = f
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(against.as_chunks::<4>().0)
+            .enumerate()
+            .filter(|(_, (a, b))| a[..3] != b[..3])
+            .map(|(i, _)| i / cw as usize)
+            .collect();
+        r.dedup();
+        r
+    };
+    let body_rows = rows(&wb_bare, &ba_empty);
+    let wing_rows = rows(&wb_wings, &wb_bare);
+    let (top, bottom) = (
+        body_rows.iter().min().copied().unwrap_or(0),
+        body_rows.iter().max().copied().unwrap_or(0),
+    );
+    let inside = wing_rows
+        .iter()
+        .filter(|&&r| r >= top && r <= bottom)
+        .count();
+    w.push(wit(
+        "m122.a_babys_elytra_hangs_on_its_back",
+        !wing_rows.is_empty() && inside * 100 >= wing_rows.len() * BABY_WINGS_IN_ROWS,
+        format!(
+            "{inside} of the wings' {} pixel rows lie within the baby's rows {top}..={bottom} (want >= {BABY_WINGS_IN_ROWS}%)",
+            wing_rows.len()
         ),
     ));
 

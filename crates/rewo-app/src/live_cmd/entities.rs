@@ -813,7 +813,8 @@ pub(crate) fn resolve_wings<'a>(
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
 ) -> Option<rewo_gpu::entities::WingsDraw<'a>> {
-    if !rewo_gpu::mobs::wears_humanoid_armor(kind) {
+    if !rewo_gpu::mobs::wears_humanoid_armor(kind) && rewo_gpu::mobs::baby_armor_set(kind).is_none()
+    {
         return None;
     }
     // `getPlayerElytraTexture`: `skin.elytra()` (no profile Rewo sees
@@ -3892,9 +3893,12 @@ pub(crate) fn armor_keys<'a>(
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
     trim_slots: &std::collections::HashMap<String, (u32, u32)>,
+    // M416 — a baby humanoid (`rewo_gpu::mobs::baby_armor_set`).
+    baby: bool,
 ) -> [Option<rewo_gpu::entities::ArmorPiece<'a>>; 4] {
     armor_keys_of(
         session.world.entities.armor(id),
+        baby,
         items,
         equipment,
         |piece, asset, layer| {
@@ -3908,6 +3912,8 @@ pub(crate) fn armor_keys<'a>(
 /// piece's trim sprite in the drawing pass's pool (`None`: not there).
 pub(crate) fn armor_keys_of<'a>(
     worn: [Option<rewo_world::entities::WornPiece>; 4],
+    // M416 — `state.isBaby`: every slot takes the `humanoid_baby` layer.
+    baby: bool,
     items: &rewo_data::items::Items,
     equipment: &'a rewo_data::equipment::EquipmentAssets,
     trim: impl Fn(
@@ -3920,8 +3926,11 @@ pub(crate) fn armor_keys_of<'a>(
     std::array::from_fn(|i| {
         let piece = worn[i]?;
         let asset = rewo_data::item_props_table::equip_asset(items.name(piece.item)?)?;
-        // head 0, chest 1, legs 2, feet 3 — only the legs are inner.
-        let layer = if i == 2 {
+        // head 0, chest 1, legs 2, feet 3 — only the legs are inner (a
+        // baby's every slot is `humanoid_baby`, M416).
+        let layer = if baby {
+            ArmorLayer::HumanoidBaby
+        } else if i == 2 {
             ArmorLayer::Leggings
         } else {
             ArmorLayer::Humanoid
@@ -5837,7 +5846,14 @@ pub(super) fn collect_entities<'a>(
             }),
             // `ItemStack.hasFoil()` (M45), decoded at the wire because it
             // lives only in the component patch.
-            armor: armor_keys(session, id, item_names, equipment, trim_slots),
+            armor: armor_keys(
+                session,
+                id,
+                item_names,
+                equipment,
+                trim_slots,
+                rewo_gpu::mobs::baby_armor_set(kind).is_some(),
+            ),
             // M294 — the body slot's layers (a horse's armour).
             body_armor: body_armor_piece(session, id, kind, item_names, equipment),
             // M295 — the saddle's layers, and its reins while ridden.

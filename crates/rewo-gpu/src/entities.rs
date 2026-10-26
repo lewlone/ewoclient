@@ -3559,8 +3559,8 @@ impl EntityPass {
     ) {
         let Some(w) = d.wings else { return };
         // The renderers that add a `WingsLayer`: avatars, the humanoid
-        // mobs and the armour stand.
-        if !mobs::wears_humanoid_armor(d.kind) {
+        // mobs (M416: their babies too) and the armour stand.
+        if !mobs::wears_humanoid_armor(d.kind) && mobs::baby_armor_set(d.kind).is_none() {
             return;
         }
         let Some((ax, ay, sheet_w, sheet_h)) = (match w.texture {
@@ -3571,7 +3571,11 @@ impl EntityPass {
         };
         let [light_r, light_g, light_b] = d.light;
         let hurt = overlay_value(d.hurt, d.white_overlay);
+        // `ELYTRA_BABY` is `ElytraModel.BABY_TRANSFORMER`,
+        // `MeshTransformer.scaling(0.5)`: the root pose scaled by `k` and
+        // moved `24.016·(1 − k)` px down (M416; M403 left out the move).
         let k = if d.mob.is_baby { 0.5 } else { 1.0 };
+        let drop = 24.016 * (1.0 - k);
         let y = if w.crouching { 3.0 } else { 0.0 };
         let [rx, ry, rz] = w.rot;
         for (pivot, rot, min, mirror) in [
@@ -3588,7 +3592,7 @@ impl EntityPass {
                     let r = mobs::rotate_zyx(pos[i], rot);
                     frame.place([
                         (r[0] + pivot[0]) * k,
-                        (r[1] + pivot[1]) * k,
+                        (r[1] + pivot[1]) * k + drop,
                         (r[2] + pivot[2]) * k + 2.0,
                     ])
                 });
@@ -3636,7 +3640,9 @@ impl EntityPass {
         xf: &[([[f32; 3]; 3], [f32; 3])],
         frame: &EntityFrame,
     ) {
-        if !mobs::wears_humanoid_armor(d.kind) {
+        // M416 — a baby humanoid wears its own armour mesh.
+        let baby = mobs::baby_armor_set(d.kind);
+        if baby.is_none() && !mobs::wears_humanoid_armor(d.kind) {
             return;
         }
         let [light_r, light_g, light_b] = d.light;
@@ -3648,6 +3654,35 @@ impl EntityPass {
             (mobs::ArmorSlot::Head, d.armor[0]),
         ] {
             let Some(piece) = piece else { continue };
+            // This slot's boxes: the body part each hangs from, the shift
+            // from that part's rest pivot to the armour part's own (M416:
+            // a baby's armour mesh has pivots of its own; the adult's
+            // shares the body's), and the faces.
+            let placed: Vec<(usize, [f32; 3], [mobs::CubeFace; 6])> = match baby {
+                Some(set) => mobs::baby_armor_boxes(set, slot)
+                    .into_iter()
+                    .filter_map(|b| {
+                        let pi = if b.part.is_empty() {
+                            mobs::STATIC_PART
+                        } else {
+                            mobs::armor_part(&model.parts, b.part)?
+                        };
+                        let rest = model.parts[pi].pivot;
+                        let shift = std::array::from_fn(|k| b.pivot[k] - rest[k]);
+                        let faces = mobs::cube_faces_g(b.uv, b.min, b.dims, b.grow, b.mirror);
+                        Some((pi, shift, faces))
+                    })
+                    .collect(),
+                Option::None => mobs::armor_boxes(slot)
+                    .into_iter()
+                    .filter_map(|b| {
+                        let pi = mobs::armor_part(&model.parts, b.part)?;
+                        let faces =
+                            mobs::cube_faces(b.uv, b.min, b.dims, slot.grow() + b.extend, b.mirror);
+                        Some((pi, [0.0; 3], faces))
+                    })
+                    .collect(),
+            };
             // In list order: `renderLayers` walks the layers in order, and an
             // overlay has to land on top of the base it covers. The trim is
             // appended as a further "layer" with its own origin and no tint —
@@ -3685,16 +3720,12 @@ impl EntityPass {
                 } else {
                     verts
                 };
-                for b in mobs::armor_boxes(slot) {
-                    let Some(pi) = mobs::armor_part(&model.parts, b.part) else {
-                        continue;
-                    };
-                    let (m, o) = &xf[pi];
-                    // The sheet is 64x32 in the classic armour layout, packed into
-                    // the shared atlas at `(ax, ay)`.
-                    for (_facing, pos, uvs) in
-                        mobs::cube_faces(b.uv, b.min, b.dims, slot.grow() + b.extend, b.mirror)
-                    {
+                for (pi, shift, faces) in &placed {
+                    let (m, o) = &xf[*pi];
+                    let o = &[o[0] + shift[0], o[1] + shift[1], o[2] + shift[2]];
+                    // The sheet is 64x32 in the classic armour layout (64x64
+                    // for a baby's), packed into the shared atlas at `(ax, ay)`.
+                    for (_facing, pos, uvs) in faces {
                         if verts.len() + 6 > MAX_VERTS {
                             return;
                         }
