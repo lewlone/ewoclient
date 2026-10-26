@@ -118,7 +118,8 @@ pub(super) fn slot_icon_model(
     Some(
         match s.trim_material.and_then(|m| trim_materials.get(m as usize)) {
             Some(m) => format!("{base}#{}", m.id),
-            None => base.to_string(),
+            // A compass or clock draws the frame its needle is on.
+            None => needles::needle_model(base),
         },
     )
 }

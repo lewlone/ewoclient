@@ -1770,6 +1770,11 @@ impl LiveApp {
         {
             log::warn!("live: held-item texture upload: {e}");
         }
+        // The compass and clock needles for every draw below and the hotbar's.
+        let needle_frame = self
+            .needles
+            .advance(session.ticks as i64, &needles::inputs_of(session));
+        needles::set_frame(needle_frame);
         // M282 — the vignette: one `updateVignetteBrightness` per game tick
         // (a long gap is a fresh session: start over rather than replay it).
         if session.ticks < self.vignette_tick || session.ticks - self.vignette_tick > 200 {

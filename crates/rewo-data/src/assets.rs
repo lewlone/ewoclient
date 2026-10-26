@@ -6828,6 +6828,34 @@ mod tests {
         .as_ref()
     }
 
+    /// The compass, the recovery compass and the clock used to be suppressed
+    /// (a `range_dispatch` over a needle). Each now bakes a plain model for the
+    /// first threshold and one variant per frame the needle can pick: 32 for
+    /// each compass and 64 for the clock (`item/compass_00`..`_31`,
+    /// `item/clock_00`..`_63`, as the jar names them).
+    #[test]
+    fn the_needle_items_bake_a_model_and_every_frame() {
+        let Some((baked, _)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        let held = &baked.held_items;
+        let variants = held.use_variants();
+        for (item, prefix, frames) in [
+            ("compass", "compass", 32usize),
+            ("recovery_compass", "recovery_compass", 32),
+            ("clock", "clock", 64),
+        ] {
+            let name = format!("minecraft:{item}");
+            assert!(held.get(&name).is_some(), "{item} has no plain model");
+            assert!(variants.is_dynamic(&name), "{item} is not dynamic");
+            for i in 0..frames {
+                let key = format!("{name}#minecraft:item/{prefix}_{i:02}");
+                assert!(held.get(&key).is_some(), "{key} did not bake");
+            }
+        }
+    }
+
     /// Every state id of `block` whose `blocks.json` property map contains
     /// `props` (the report lists all of a state's properties, so a caller
     /// names only the ones it cares about). Panics on an empty match, so a

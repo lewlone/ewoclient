@@ -710,6 +710,10 @@ pub struct PlaySession {
     /// `ClientLevelData.getHorizonHeight` is the level's bottom on a flat
     /// world and 63 otherwise, which decides vanilla's dark sky disc.
     pub level_is_flat: bool,
+    /// `CommonPlayerSpawnInfo.lastDeathLocation` from the latest login /
+    /// respawn: `player.getLastDeathLocation()`, which the recovery compass
+    /// points at.
+    pub last_death_location: Option<crate::spawn_info::GlobalPos>,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -2033,6 +2037,7 @@ impl<'a> Connection<'a> {
             view_area: crate::view_area::ViewArea::default(),
             client_info: self.client_info,
             level_is_flat: false,
+            last_death_location: None,
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -4810,6 +4815,7 @@ impl PlaySession {
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, &spawn);
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
         // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
         // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
         // `RespawnData.DEFAULT`, which no client ever holds. The server's
@@ -4879,6 +4885,7 @@ impl PlaySession {
         // parse succeeds, alongside everything else this packet establishes.
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
         self.level_is_flat = spawn.is_flat;
+        self.last_death_location = spawn.last_death_location.clone();
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,

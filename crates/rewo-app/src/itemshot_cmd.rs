@@ -1187,7 +1187,7 @@ fn check_render(
     )?;
     let dirt = render([Some("minecraft:dirt"), None], &mut gpu, &mut wr, &mut off)?;
     let bow = render(
-        [Some("minecraft:compass"), None],
+        [Some("minecraft:spyglass"), None],
         &mut gpu,
         &mut wr,
         &mut off,
@@ -1234,9 +1234,10 @@ fn check_render(
         "c3.a_suppressed_item_renders_as_an_empty_hand",
         bow_px.is_empty(),
         format!(
-            "{} pixels differ (want 0) — a compass is a `range_dispatch` on the \
-             needle's angle, which this client does not evaluate (until M243 \
-             this was a bed, until M244 a banner, until M246 a shield)",
+            "{} pixels differ (want 0) — a spyglass's in-hand model has no \
+             parent, so it is a bespoke model this client does not draw (until \
+             M243 this was a bed, until M244 a banner, until M246 a shield, \
+             until the needle items a compass)",
             bow_px.len()
         ),
     );
@@ -1658,7 +1659,7 @@ fn check_render(
 
     // A suppressed item is nothing on the ground too, not a fallback shape.
     let g_bow = ground(
-        Some("minecraft:compass"),
+        Some("minecraft:spyglass"),
         1,
         0.0,
         3,
@@ -1672,9 +1673,11 @@ fn check_render(
         "g8.a_suppressed_item_drops_as_nothing",
         changed(&g_none, &g_bow).is_empty(),
         format!(
-            "{} pixels differ (want 0) — a compass's definition is a \
-             `range_dispatch` on its angle, so it has no baked model in either \
-             context (a bed until M243, a banner until M244, a shield until M246)",
+            "{} pixels differ (want 0) — a spyglass's in-hand model is \
+             bespoke and the bake skips an item whose hand model is, so it has \
+             no baked model on the ground either (a bed until M243, a banner \
+             until M244, a shield until M246, a compass until the needle \
+             items)",
             changed(&g_none, &g_bow).len()
         ),
     );
