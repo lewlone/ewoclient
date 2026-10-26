@@ -496,6 +496,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
     // `route_update_attributes` recognises the packet and stores nothing.
     session.entity_types = Some(std::sync::Arc::new(etypes.clone()));
     session.attribute_registry = Some(data.attributes.clone());
+    // The built-in registries a villager's metadata ids index (the profession
+    // layer's sheets).
+    session.villager_registries = Some(data.villager_registries.clone());
 
     let want_validation = cfg!(debug_assertions) && !args.no_validation;
     match &args.out {

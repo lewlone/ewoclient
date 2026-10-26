@@ -873,11 +873,40 @@ pub enum PiglinArmPose {
     CrossbowHold,
 }
 
+/// What `VillagerProfessionLayer` draws over a villager or zombie villager,
+/// resolved by the app (`rewo_data::villager::LayerPlan`; the keys are the
+/// layer sheets' names in the entity atlas).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VillagerLayers {
+    /// The biome sheet (`baby/<type>` for a baby).
+    pub type_key: Option<&'static str>,
+    /// `typeHatVisible`: the type sheet on the full model, else on the
+    /// `*_NO_HAT` model (no head subtree).
+    pub type_with_head: bool,
+    pub profession_key: Option<&'static str>,
+    pub level_key: Option<&'static str>,
+}
+
+impl VillagerLayers {
+    /// The layers in `submit`'s order as `(sheet key, draws the head)`: the
+    /// type sheet, then the profession sheet and the badge, which always go
+    /// on the full model.
+    pub fn passes(&self) -> [Option<(&'static str, bool)>; 3] {
+        [
+            self.type_key.map(|k| (k, self.type_with_head)),
+            self.profession_key.map(|k| (k, true)),
+            self.level_key.map(|k| (k, true)),
+        ]
+    }
+}
+
 /// The synced mob state the M20 arm rigs read, mirrored into `rewo-gpu` so the
 /// renderer keeps no `rewo-world` dependency (the same pattern [`AllayDance`]
 /// and [`SwingKind`] use).
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct MobCombat {
+    /// The villager profession layer (`None` draws only the base sheet).
+    pub villager: Option<VillagerLayers>,
     /// `Mob.isAggressive()` — deepens the undead arm drop from −π/2.25 to
     /// −π/1.5 and gates the skeleton rig entirely.
     pub aggressive: bool,
@@ -5594,7 +5623,7 @@ fn villager_build(b: &mut ModelBuilder, witch: bool) -> (usize, Option<usize>) {
 /// part), the body, the robe (`bb_main`, 0.2) and two short legs on the
 /// villager's half-amplitude walk. Its layout is not the adult's: the baby
 /// sheet painted onto the adult mesh (M175 to M317) scrambled it. Only the
-/// base sheet, as Rewo's adult villager draws (no type or profession layer).
+/// base sheet; the biome layer is drawn over it from [`VillagerLayers`].
 fn villager_baby() -> Model {
     let mut b = ModelBuilder::new();
     let head = b.part([0.0, 16.0, 0.0], Anim::Head, 1.0);
@@ -6523,8 +6552,8 @@ fn dolphin_baby() -> Model {
 /// villager's head (8 x 8 x 7, looking) with its hat (0.3), brim and nose on
 /// child folds, a body with its robe (0.1), two 2 x 5 x 2 arms on
 /// `animateZombieArms` (named, as the adult's are) and two short legs on the
-/// humanoid walk. Only the base sheet, as Rewo's adult draws (no type or
-/// profession layer).
+/// humanoid walk. The base sheet; the biome layer is drawn over it from
+/// [`VillagerLayers`].
 fn zombie_villager_baby() -> Model {
     let mut b = ModelBuilder::new();
     let body = [Fold::at([0.0, 18.75, 0.0])];

@@ -920,6 +920,9 @@ pub struct PlaySession {
     /// The `minecraft:attribute` registry plus the per-entity suppliers (M52).
     /// `None` → as above.
     pub attribute_registry: Option<std::sync::Arc<rewo_data::attributes::AttributeRegistry>>,
+    /// The `villager_type` / `villager_profession` ids a villager's metadata
+    /// carries, for the profession layer's sheets. `None` → no layer.
+    pub villager_registries: Option<std::sync::Arc<rewo_data::villager::VillagerRegistries>>,
     /// Item → prototype swing animation + the data-component ids the equipment
     /// patch reader needs (M19). `None` (the headless protocol harnesses) →
     /// equipment packets are recognised but interpret no item, so every swing
@@ -2100,6 +2103,7 @@ impl<'a> Connection<'a> {
             entity_shapes: None,
             entity_shapes_tried: false,
             attribute_registry: None,
+            villager_registries: None,
             swing_data: None,
             recipe_display_ids: None,
             swing_effect_ids,

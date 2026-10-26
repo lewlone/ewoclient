@@ -915,6 +915,12 @@ pub struct BakedAssets {
     /// shape as [`MobTexture`] plus the variant id that addresses it, because
     /// they ride M57b's ETF variant machinery into the same atlas.
     pub mob_variant_textures: Vec<MobVariantTexture>,
+    /// The villager and zombie villager overlay sheets
+    /// (`crate::villager::SHEETS`, `VillagerProfessionLayer`), keyed by the
+    /// sheet's atlas key. A layer re-uses the base model's UVs, so each is the
+    /// base sheet's size; a missing jar entry is simply absent and that layer
+    /// is not drawn.
+    pub villager_textures: Vec<MobTexture>,
     /// Held-item models (M22): every resolvable item's quads + textures.
     pub held_items: crate::held_items::HeldItems,
     /// In-game HUD sprites (hotbar / hearts / hunger / crosshair) from the
@@ -1974,6 +1980,22 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             None => log::warn!("rewo-data: {path} missing — {key} keeps its base texture there"),
         }
     }
+    let mut villager_textures = Vec::with_capacity(crate::villager::SHEETS.len());
+    for sheet in crate::villager::SHEETS {
+        let size = crate::villager::SHEET_SIZE;
+        match bake_entity_tex(&mut jar, sheet.path, size, size) {
+            Some(rgba) => villager_textures.push(MobTexture {
+                key: sheet.key,
+                w: size,
+                h: size,
+                rgba,
+            }),
+            None => log::warn!(
+                "rewo-data: {} missing, that villager layer is not drawn",
+                sheet.path
+            ),
+        }
+    }
     let hud = bake_hud(&mut jar);
     let locator = bake_locator(&mut jar);
     let container = bake_container(&mut jar);
@@ -2646,6 +2668,7 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
         font,
         mob_textures,
         mob_variant_textures,
+        villager_textures,
         baby_swap_baked,
         baby_swap_skips,
         hud,

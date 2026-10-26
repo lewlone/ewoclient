@@ -1870,6 +1870,11 @@ pub struct MobState {
     /// M18 rule again, and the reason `apply_set_entity_data` gates this on
     /// the type being a cat or a wolf.
     pub tamable_flags: u8,
+    /// `VillagerData` (serializer 18) of a villager or zombie villager: the
+    /// raw `(villager_type id, villager_profession id, level)`. `None` until
+    /// the server sends it, which is not vanilla's default (plains / none /
+    /// 1): the layer draws that default only once it is told.
+    pub villager_data: Option<(i32, i32, i32)>,
 }
 
 impl MobState {
@@ -3283,6 +3288,17 @@ impl EntityTable {
     /// texture Rewo baked rather than on some default it invented.
     pub fn variant(&self, id: i32) -> Option<i32> {
         self.mob_state.get(&id).and_then(|s| s.variant)
+    }
+
+    /// A villager's or zombie villager's `VillagerData`, as the raw wire ids
+    /// (see [`MobState::villager_data`]).
+    pub fn set_villager_data(&mut self, id: i32, data: (i32, i32, i32)) {
+        self.mob_state.entry(id).or_default().villager_data = Some(data);
+    }
+
+    /// The `VillagerData` the server sent, `None` if it sent none.
+    pub fn villager_data(&self, id: i32) -> Option<(i32, i32, i32)> {
+        self.mob_state.get(&id).and_then(|s| s.villager_data)
     }
 
     /// M342 — a wolf's collar colour (`DATA_COLLAR_COLOR`). Kind-gated by the
@@ -5839,6 +5855,27 @@ mod side_state_tests {
         assert!(!t.guardian_has_attack_target(8), "no inherited beam");
         assert_eq!(t.custom_name(8), None);
         assert!(t.get(8).is_some(), "and the entity itself is there");
+    }
+
+    /// A villager's profession is the entity's alone: stored per id, and a
+    /// reused id starts with none (its outfit would otherwise follow the id).
+    #[test]
+    fn a_villagers_data_is_per_entity_and_does_not_survive_the_id() {
+        let mut t = EntityTable::default();
+        spawned(&mut t, 4);
+        spawned(&mut t, 6);
+        assert_eq!(t.villager_data(4), None, "nothing sent yet");
+        t.set_villager_data(4, (2, 5, 3));
+        assert_eq!(t.villager_data(4), Some((2, 5, 3)));
+        assert_eq!(t.villager_data(6), None, "a neighbour is unaffected");
+        t.set_villager_data(4, (0, 9, 1));
+        assert_eq!(t.villager_data(4), Some((0, 9, 1)), "the latest wins");
+        spawned(&mut t, 4);
+        assert_eq!(t.villager_data(4), None, "a re-add inherits nothing");
+        t.set_villager_data(4, (1, 1, 1));
+        t.remove(4);
+        assert_eq!(t.villager_data(4), None);
+        assert_eq!(side_rows(&t, 4), 0);
     }
 
     /// Churn does not grow the side maps: a thousand ids spawned, dressed and

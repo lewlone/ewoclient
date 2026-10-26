@@ -74,6 +74,8 @@ const M302_SHELF_GROWTH: u32 = 256;
 const M307_SHELF_GROWTH: u32 = 256;
 /// M348 — the seventh (256 rows, for the cold and warm cows' sheets).
 const M348_SHELF_GROWTH: u32 = 256;
+/// The villager profession layer's 66 sheets (five shelves of 66 rows).
+const VILLAGER_SHELF_GROWTH: u32 = 384;
 
 #[derive(ClapArgs)]
 pub struct CapeshotArgs {
@@ -772,6 +774,7 @@ fn check_pool(c: &mut Checker) {
                 + M302_SHELF_GROWTH
                 + M307_SHELF_GROWTH
                 + M348_SHELF_GROWTH
+                + VILLAGER_SHELF_GROWTH
             && ah
                 == ATLAS_H_BEFORE_M60
                     + M64_SHELF_GROWTH
@@ -781,11 +784,12 @@ fn check_pool(c: &mut Checker) {
                     + M302_SHELF_GROWTH
                     + M307_SHELF_GROWTH
                     + M348_SHELF_GROWTH
+                    + VILLAGER_SHELF_GROWTH
                     + sh * 2
                     + M194_MAP_BAND
                     + M246_BIG_BAND,
         format!(
-            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for vanilla's 42 metadata variant sheets, and the shelf ceiling is defined by subtraction from ATLAS_H — so the item, skin, trim and cape pools all slid down by exactly that. Nothing on disk depends on those origins, and the *mob* packing is still byte-for-byte what it was because the packer is sequential and the region only grew at its far end: `mobshot --check` staying at 243/243 is the empirical half of that claim. M194's {M194_MAP_BAND}-row map band went BELOW the capes, so the cape origin did not move; M223 grew the shelf by {M223_SHELF_GROWTH} more rows (the boat woods), sliding the pools again, M297 by {M297_SHELF_GROWTH} (the llama decor sheets) M299 by {M299_SHELF_GROWTH} (the extruded gutters) M302 by {M302_SHELF_GROWTH} (the harness colours) M307 by {M307_SHELF_GROWTH} (the sulfur cube's sheets) and M348 by {M348_SHELF_GROWTH} (the cold and warm cows')"
+            "cape pool starts at {pool_y}, atlas {ah} tall. M60 put the band at the pre-M60 ATLAS_H {ATLAS_H_BEFORE_M60} and claimed nothing below it moved; M64 then grew the *shelf* region by {M64_SHELF_GROWTH} rows for vanilla's 42 metadata variant sheets, and the shelf ceiling is defined by subtraction from ATLAS_H — so the item, skin, trim and cape pools all slid down by exactly that. Nothing on disk depends on those origins, and the *mob* packing is still byte-for-byte what it was because the packer is sequential and the region only grew at its far end: `mobshot --check` staying at 243/243 is the empirical half of that claim. M194's {M194_MAP_BAND}-row map band went BELOW the capes, so the cape origin did not move; M223 grew the shelf by {M223_SHELF_GROWTH} more rows (the boat woods), sliding the pools again, M297 by {M297_SHELF_GROWTH} (the llama decor sheets) M299 by {M299_SHELF_GROWTH} (the extruded gutters) M302 by {M302_SHELF_GROWTH} (the harness colours) M307 by {M307_SHELF_GROWTH} (the sulfur cube's sheets) M348 by {M348_SHELF_GROWTH} (the cold and warm cows') and the villager layers' sheets by {VILLAGER_SHELF_GROWTH}"
         ),
     );
 }

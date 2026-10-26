@@ -1647,6 +1647,8 @@ pub(crate) fn resolve_mob_combat(
         _ => P::Crossed,
     };
     MobCombat {
+        // Set by the caller, which has the registries and the invisibility.
+        villager: None,
         aggressive: st.is_aggressive(),
         main_hand_empty,
         holding_bow,
@@ -4163,6 +4165,44 @@ pub(crate) fn undercoat_visible(kind: EntityModelKind, dye: Option<u8>, is_baby:
     kind == EntityModelKind::Sheep && dye.unwrap_or(0) != 0 && !is_baby
 }
 
+/// `VillagerProfessionLayer.submit` for one entity: the sheets it wears, or
+/// `None` for a kind without the layer, an invisible entity (`if
+/// (!state.isInvisible)`), or data that names no registry entry.
+///
+/// A villager the server sent no `VillagerData` for is the default one
+/// (`Villager.createDefaultVillagerData()`: plains, none, level 1), because
+/// synched data omits a value equal to its default: a jobless plains villager
+/// still wears its biome sheet. A zombie villager's default is random on each
+/// side, so one never told draws nothing rather than a guess.
+pub(crate) fn villager_layers(
+    regs: Option<&rewo_data::villager::VillagerRegistries>,
+    data: Option<(i32, i32, i32)>,
+    kind: EntityModelKind,
+    invisible: bool,
+) -> Option<rewo_gpu::mobs::VillagerLayers> {
+    let (zombie, baby) = match kind {
+        EntityModelKind::Villager => (false, false),
+        EntityModelKind::VillagerBaby => (false, true),
+        EntityModelKind::ZombieVillager => (true, false),
+        EntityModelKind::ZombieVillagerBaby => (true, true),
+        _ => return None,
+    };
+    if invisible {
+        return None;
+    }
+    let plan = match data {
+        Some(d) => regs?.plan(zombie, d, baby)?,
+        None if !zombie => rewo_data::villager::plan(false, "plains", "none", 1, baby)?,
+        None => return None,
+    };
+    Some(rewo_gpu::mobs::VillagerLayers {
+        type_key: plan.type_key,
+        type_with_head: plan.type_with_head,
+        profession_key: plan.profession_key,
+        level_key: plan.level_key,
+    })
+}
+
 /// The baby's own model, where vanilla's renderer swaps one in: M307 —
 /// `SulfurCubeRenderer.submit`'s `this.model = state.isBaby ? smallModel :
 /// normalModel`; M314 — `AgeableMobRenderer`'s for the happy ghast.
@@ -5206,6 +5246,12 @@ pub(super) fn collect_entities<'a>(
         );
         // M20: the synced mob state the undead / skeleton / illager rigs read.
         let mut mob = resolve_mob_combat(&session.world.entities, id, kind, bow_item);
+        mob.villager = villager_layers(
+            session.villager_registries.as_deref(),
+            session.world.entities.villager_data(id),
+            kind,
+            session.world.entities.is_invisible(id),
+        );
         // M401 — a sleeper (the SLEEPING pose): the bed's orientation from
         // the block at its sleeping position, the angle it lies at, and the
         // head offset toward the bed's foot (below, on the position).
@@ -5933,6 +5979,18 @@ pub(crate) fn entity_textures(baked: &assets::BakedAssets) -> MobTextures<'_> {
                 h: t.h,
                 rgba: &t.rgba,
             }))
+            .collect(),
+        // The villager profession layer's sheets, packed after everything
+        // else (so no earlier address moves) and found by name.
+        layers: baked
+            .villager_textures
+            .iter()
+            .map(|t| MobTexEntry {
+                key: t.key,
+                w: t.w,
+                h: t.h,
+                rgba: &t.rgba,
+            })
             .collect(),
     }
 }
