@@ -70,9 +70,14 @@ goes into the module that owns the subsystem, not back into `world.rs`.
 - **Villager outfits** (`VillagerProfessionLayer`): the type, profession and
   badge sheets are `rewo_data::villager::SHEETS`, packed after every other
   atlas texture and found by name; `emit_model` redraws the base model's quads
-  on each in the `EQUAL` range (the no-hat model skips the head subtree), so
-  the layer sits at the base's exact depth. Adding atlas textures means
-  growing `ATLAS_H` and the cape gate's `*_SHELF_GROWTH` sum.
+  on each into the layer range (the no-hat model skips the head subtree),
+  drawn by `draw_layers` with `GREATER_OR_EQUAL` AND depth writes. Not
+  `EQUAL`: the hat and rim are texels the base sheet leaves transparent, so
+  the base never wrote their depth (M-playtest: a farmer with no hat).
+  `mobtexshot`'s `vo1` checks the hat widens the head. Adding atlas textures
+  means growing `ATLAS_H` and the cape gate's `*_SHELF_GROWTH` sum, and moves
+  every atlas V denominator (a witness that rests on one or two edge texels
+  can flip: `m77`'s puppy did).
 - **World text frames are y-down** (a sign's and a text display's
   transform end in a negative y scale, as vanilla's font layout does), so
   `emit_world_text` maps a glyph's top to its cell's top (`glyph_uv`'s

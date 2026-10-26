@@ -1350,6 +1350,12 @@ pub struct EntityPass {
     shadow_pipeline: Option<vk::Pipeline>,
     shadow_verts: u32,
     shadow_quads: Vec<ShadowQuad>,
+    /// The villager profession layers (`entityCutoutNoCull` over the base
+    /// model): opaque with the entity shader, depth `GREATER_OR_EQUAL` with
+    /// writes. The thirteenth range, stored last; drawn right after the solid
+    /// one.
+    layer_pipeline: vk::Pipeline,
+    layer_verts: u32,
     /// The glint pipeline, shared by both sheets (M50). Built by whichever of
     /// the two `init_*_glint` calls runs first.
     glint_pipeline: Option<vk::Pipeline>,
@@ -2184,6 +2190,23 @@ impl EntityPass {
                 false,
             )?;
 
+            // The villager profession layers: `DepthStencilState.DEFAULT`
+            // (reversed-Z `GREATER_OR_EQUAL` with writes), no blend; the entity
+            // fragment shader's alpha test discards the transparent texels.
+            let layer_pipeline = build_pipeline_full(
+                &device,
+                layout,
+                color_format,
+                PipelineState {
+                    blend: false,
+                    depth_write: true,
+                    color_write: true,
+                },
+                vk::CompareOp::GREATER_OR_EQUAL,
+                include_bytes!(concat!(env!("OUT_DIR"), "/entity.frag.spv")),
+                false,
+            )?;
+
             let ring = crate::buf_ring::BufRing::with_capacity(
                 gpu,
                 "entity-verts",
@@ -2206,6 +2229,8 @@ impl EntityPass {
                 shadow_pipeline: None,
                 shadow_verts: 0,
                 shadow_quads: Vec::new(),
+                layer_pipeline,
+                layer_verts: 0,
                 outline_verts: 0,
                 swirl: None,
                 swirl_pipeline: None,
@@ -2755,6 +2780,9 @@ impl EntityPass {
         let mut translucent_verts: Vec<Vertex> = Vec::new();
         // M363 — the boats' water patches, depth only.
         let mut water_mask_verts: Vec<Vertex> = Vec::new();
+        // The villager profession layers: opaque over their base model, depth
+        // `GREATER_OR_EQUAL` with writes.
+        let mut layer_verts: Vec<Vertex> = Vec::new();
         let glint_offsets =
             crate::gui_item::glint_offsets((time as f64) * 1000.0, crate::gui_item::GLINT_SPEED);
 
@@ -2856,6 +2884,7 @@ impl EntityPass {
                     &mut wind_verts,
                     &mut translucent_verts,
                     &mut water_mask_verts,
+                    &mut layer_verts,
                     d,
                     model,
                     time,
@@ -2885,7 +2914,8 @@ impl EntityPass {
                         outline: None,
                         ..*d
                     };
-                    let (mut gv, mut gt, mut ge, mut gg, mut ga, mut gtr) = (
+                    let (mut gv, mut gt, mut ge, mut gg, mut ga, mut gtr, mut gl) = (
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -2911,6 +2941,7 @@ impl EntityPass {
                         &mut Vec::new(),
                         &mut gtr,
                         &mut Vec::new(),
+                        &mut gl,
                         &ghost,
                         model,
                         time,
@@ -2918,7 +2949,7 @@ impl EntityPass {
                         Some(&mut gsink),
                         &mut gasink,
                     );
-                    outline_verts.extend(gv.iter().chain(&gtr).map(|v| Vertex {
+                    outline_verts.extend(gv.iter().chain(&gtr).chain(&gl).map(|v| Vertex {
                         color: [c[0], c[1], c[2], 1.0],
                         ..*v
                     }));
@@ -3049,6 +3080,8 @@ impl EntityPass {
         // above is unchanged.
         let shadow_quads = std::mem::take(&mut self.shadow_quads);
         verts.extend(shadow_vertices(&shadow_quads, cam_pos));
+        let shadow_end = verts.len();
+        verts.append(&mut layer_verts);
         let counts = [
             solid,
             text_end - solid,
@@ -3061,7 +3094,8 @@ impl EntityPass {
             wind_end - swirl_end,
             translucent_end - wind_end,
             water_mask_end - translucent_end,
-            verts.len() - water_mask_end,
+            shadow_end - water_mask_end,
+            verts.len() - shadow_end,
         ]
         .map(|c| c as u32);
         // The per-emitter `MAX_VERTS` guards bound each range on its own, but
@@ -3075,7 +3109,8 @@ impl EntityPass {
             )
         };
         let kept = self.ring.write_fixed(bytes, VERTEX_STRIDE as usize) / VERTEX_STRIDE as usize;
-        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11] = clamp_ranges(counts, kept as u32);
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12] =
+            clamp_ranges(counts, kept as u32);
         self.solid_verts = s0;
         self.text_verts = s1;
         self.glint_verts = s2;
@@ -3089,6 +3124,7 @@ impl EntityPass {
         self.translucent_verts = s9;
         self.water_mask_verts = s10;
         self.shadow_verts = s11;
+        self.layer_verts = s12;
     }
 
     // Draw one mob model: per-part vanilla `setupAnim` rotation about the
@@ -3813,6 +3849,10 @@ impl EntityPass {
         translucent_out: &mut Vec<Vertex>,
         // M363 — the depth-only water patch (`waterMask`).
         mask_out: &mut Vec<Vertex>,
+        // The villager profession layer's quads: opaque, depth tested
+        // `GREATER_OR_EQUAL` WITH writes, like vanilla's `entityCutoutNoCull`
+        // layers over their base model.
+        layer_out: &mut Vec<Vertex>,
         d: &EntityDraw<'_>,
         model: &MobModel,
         time: f32,
@@ -4190,10 +4230,13 @@ impl EntityPass {
         // base's light and overlay) in the type, profession and badge sheets.
         // The layer's model IS the base model, so its quads are the base's
         // tex-0 quads at the same pose (`place`), moved onto the layer sheet
-        // by the atlas delta; they land at the base's exact depth, so they go
-        // to the `EQUAL` range like the sheep's undercoat. The no-hat model
-        // (`createNoHatModel` clears the whole head subtree) is "skip the
-        // head's quads".
+        // by the atlas delta. They go to their own range, depth tested
+        // `GREATER_OR_EQUAL` with writes: the body's texels land at the base's
+        // exact depth (equal passes), but the straw hat and its rim are texels
+        // the base sheet leaves transparent, so the base never wrote their
+        // depth and an `EQUAL` test (the sheep undercoat's) would reject the
+        // whole hat. The no-hat model (`createNoHatModel` clears the whole
+        // head subtree) is "skip the head's quads".
         if let Some(layers) = &d.mob.villager {
             for (key, with_head) in layers.passes().into_iter().flatten() {
                 let Some(&(ax, ay, _, _)) = self.armor_slots.get(key) else {
@@ -4208,12 +4251,12 @@ impl EntityPass {
                     if !visible(part) || !(with_head || !in_head_subtree(&model.parts, part)) {
                         continue;
                     }
-                    if trim_verts.len() + 6 > MAX_VERTS {
+                    if layer_out.len() + 6 > MAX_VERTS {
                         return;
                     }
                     let p4 = place(q);
                     for &i in &[0usize, 1, 2, 0, 2, 3] {
-                        trim_verts.push(Vertex {
+                        layer_out.push(Vertex {
                             pos: p4[i],
                             uv: [q.uv[i][0] + du.0, q.uv[i][1] + du.1],
                             color: [q.shade, q.shade, q.shade, 1.0],
@@ -4891,6 +4934,54 @@ impl EntityPass {
             device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.solid_pipeline);
             device.cmd_draw(cb, self.solid_verts, 1, 0, 0);
         }
+    }
+
+    /// The villager profession layers, right after the solid models: opaque,
+    /// depth `GREATER_OR_EQUAL` with writes, so a hat the base never wrote
+    /// depth for still draws, and the layers keep their order against one
+    /// another.
+    pub fn draw_layers(
+        &self,
+        gpu: &Gpu,
+        cb: vk::CommandBuffer,
+        view_proj: [[f32; 4]; 4],
+        extent: vk::Extent2D,
+    ) {
+        if self.layer_verts == 0 {
+            return;
+        }
+        unsafe {
+            if !self.bind_common(gpu, cb, view_proj, extent) {
+                return;
+            }
+            let device = &gpu.device;
+            device.cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, self.layer_pipeline);
+            // The last range in the buffer.
+            device.cmd_draw(
+                cb,
+                self.layer_verts,
+                1,
+                self.solid_verts
+                    + self.text_verts
+                    + self.glint_verts
+                    + self.trim_verts
+                    + self.armor_glint_verts
+                    + self.emissive_verts
+                    + self.outline_verts
+                    + self.swirl_verts
+                    + self.wind_verts
+                    + self.translucent_verts
+                    + self.water_mask_verts
+                    + self.shadow_verts,
+                0,
+            );
+        }
+    }
+
+    /// Vertices in the villager-layer range for the last
+    /// [`Self::set_draws`].
+    pub fn layer_vertex_count(&self) -> u32 {
+        self.layer_verts
     }
 
     /// Build the glint pipeline and upload `misc/enchanted_glint_item.png`
@@ -5642,6 +5733,7 @@ impl EntityPass {
                 device.destroy_pipeline(p, None);
             }
             device.destroy_pipeline(self.water_mask_pipeline, None);
+            device.destroy_pipeline(self.layer_pipeline, None);
             device.destroy_pipeline(self.solid_pipeline, None);
             device.destroy_pipeline(self.text_pipeline, None);
             device.destroy_pipeline(self.emissive_pipeline, None);

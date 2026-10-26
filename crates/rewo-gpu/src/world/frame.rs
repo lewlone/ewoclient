@@ -57,6 +57,8 @@ impl WorldRenderer {
         self.draw_selection(gpu, cb, view_proj, extent);
         if let Some(pass) = &self.entities {
             pass.draw_solid(gpu, cb, view_proj, extent);
+            // The villager profession layers over their base models.
+            pass.draw_layers(gpu, cb, view_proj, extent);
             // M363 — the boats' water patches into depth, before the
             // translucent water below tests against it.
             pass.draw_water_mask(gpu, cb, view_proj, extent);
