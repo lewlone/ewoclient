@@ -1646,6 +1646,7 @@ fn overlays(
                 None,
                 Some(crate::live_cmd::LoomView {
                     has_max: false,
+                    flag: None,
                     display,
                     selected: 0,
                     start_row: 0,
@@ -1727,6 +1728,7 @@ fn overlays(
                 None,
                 Some(crate::live_cmd::LoomView {
                     has_max: false,
+                    flag: None,
                     display,
                     selected: -1,
                     start_row: 0,

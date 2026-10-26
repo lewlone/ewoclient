@@ -93,7 +93,8 @@ pub struct MenuScreen {
     pub image_w: i32,
     pub image_h: i32,
     pub title_x: TitleX,
-    /// `titleLabelY`, 6 unless overridden (only `smithing`, at 15).
+    /// `titleLabelY`, 6 unless the constructor moves it: `smithing` sets 15,
+    /// `loom` and `cartography_table` subtract 2 (4), `stonecutter` 1 (5).
     pub title_y: i32,
     /// `inventoryLabelX`, 8 unless overridden (only `merchant`, at 107).
     pub inventory_label_x: i32,
@@ -172,6 +173,14 @@ const fn centered(texture: &'static str) -> Option<MenuScreen> {
     })
 }
 
+/// As [`plain`], with `titleLabelY` moved (`titleLabelY -= 2` and the like).
+const fn title_y(texture: &'static str, y: i32) -> Option<MenuScreen> {
+    Some(MenuScreen {
+        title_y: y,
+        ..*plain(texture).as_ref().unwrap()
+    })
+}
+
 /// As [`plain`], with the title at a literal x.
 const fn titled(texture: &'static str, x: i32) -> Option<MenuScreen> {
     Some(MenuScreen {
@@ -225,7 +234,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
     }),
     // lectern -- a BookViewScreen, not a container screen.
     None,
-    plain("textures/gui/container/loom.png"),
+    // `LoomScreen`: `this.titleLabelY -= 2`.
+    title_y("textures/gui/container/loom.png", 4),
     Some(MenuScreen {
         texture: "textures/gui/container/villager.png",
         image_w: 276,
@@ -263,8 +273,10 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_h: 256.0,
     }),
     centered("textures/gui/container/smoker.png"),
-    plain("textures/gui/container/cartography_table.png"),
-    plain("textures/gui/container/stonecutter.png"),
+    // `CartographyTableScreen`: `this.titleLabelY -= 2`.
+    title_y("textures/gui/container/cartography_table.png", 4),
+    // `StonecutterScreen`: `this.titleLabelY--`.
+    title_y("textures/gui/container/stonecutter.png", 5),
 ];
 
 /// `HorseInventoryScreen` (M220): `horse.png`, the default 176 x 166 panel
@@ -3879,5 +3891,413 @@ mod mount_tests {
             "no strip on a nautilus"
         );
         assert!(mount_overlays(false, 0, false, false).is_empty());
+    }
+}
+
+// -- the labels every container screen draws ---------------------------------
+
+/// Which string a container label shows. The caller owns the strings (the
+/// title is the server's component, the rest are lang keys) and the widths;
+/// [`container_labels`] owns where each goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelText {
+    /// The menu's title (`AbstractContainerScreen.title`); for the player's
+    /// own inventory `container.crafting`, for a merchant with its level
+    /// appended (`merchant.title`).
+    Title,
+    /// `playerInventoryTitle`, `container.inventory`.
+    PlayerInventory,
+    /// `MerchantScreen.TRADES_LABEL`, `merchant.trades`.
+    Trades,
+    /// `BeaconScreen.PRIMARY_EFFECT_LABEL`, `block.minecraft.beacon.primary`.
+    PrimaryPower,
+    /// `BeaconScreen.SECONDARY_EFFECT_LABEL`, `block.minecraft.beacon.secondary`.
+    SecondaryPower,
+}
+
+/// One label, at a panel-relative GUI pixel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerLabel {
+    pub text: LabelText,
+    pub x: i32,
+    pub y: i32,
+    /// `0xRRGGBB`.
+    pub color: u32,
+    pub shadow: bool,
+}
+
+/// `-12566464`, the colour of the title and inventory labels, drawn with no
+/// drop shadow (`graphics.text(font, text, x, y, -12566464, false)`).
+pub const LABEL_COLOR: u32 = 0x404040;
+
+/// `-2039584`, the beacon's two effect labels, which use the default shadow.
+pub const BEACON_LABEL_COLOR: u32 = 0xE0E0E0;
+
+/// `InventoryScreen`'s `titleLabelX`; its `titleLabelY` is the default 6.
+pub const PLAYER_TITLE_X: i32 = 97;
+
+/// The labels `extractLabels` draws for a menu, in draw order.
+///
+/// `width` is `font.width` of the string [`LabelText`] names, for the labels
+/// that are centred or right of a computed x. Transcribed from
+/// `AbstractContainerScreen.extractLabels` (the title at `titleLabelX/Y`, then
+/// `playerInventoryTitle` at `inventoryLabelX/Y`) and its overrides:
+///
+/// * `InventoryScreen` draws only the title (`container.crafting`, at x 97);
+/// * `BeaconScreen` draws neither, only its two centred effect labels at
+///   x 62 and 169, y 10;
+/// * `MerchantScreen` centres its title on 49 + imageWidth / 2, adds the
+///   "Trades" label centred on 53, and moves the inventory label to x 107;
+/// * `AnvilScreen` calls `super` and adds the cost line, which the app draws
+///   separately.
+///
+/// Empty for a menu with no container screen (the lectern).
+pub fn container_labels(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    width: impl Fn(LabelText) -> i32,
+) -> Vec<ContainerLabel> {
+    let label = |text, x, y| ContainerLabel {
+        text,
+        x,
+        y,
+        color: LABEL_COLOR,
+        shadow: false,
+    };
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        return vec![label(LabelText::Title, PLAYER_TITLE_X, 6)];
+    }
+    let Some(screen) = screen_for(layout) else {
+        return Vec::new();
+    };
+    match layout.name {
+        "beacon" => [
+            (LabelText::PrimaryPower, 62),
+            (LabelText::SecondaryPower, 169),
+        ]
+        .into_iter()
+        .map(|(text, x)| ContainerLabel {
+            text,
+            x: x - width(text) / 2,
+            y: 10,
+            color: BEACON_LABEL_COLOR,
+            shadow: true,
+        })
+        .collect(),
+        "merchant" => {
+            let trades = width(LabelText::Trades);
+            vec![
+                label(
+                    LabelText::Title,
+                    49 + screen.image_w / 2 - width(LabelText::Title) / 2,
+                    6,
+                ),
+                label(
+                    LabelText::PlayerInventory,
+                    screen.inventory_label_x,
+                    screen.inventory_label_y(),
+                ),
+                label(LabelText::Trades, 5 - trades / 2 + 48, 6),
+            ]
+        }
+        _ => vec![
+            label(
+                LabelText::Title,
+                screen.title_x(width(LabelText::Title)),
+                screen.title_y,
+            ),
+            label(
+                LabelText::PlayerInventory,
+                screen.inventory_label_x,
+                screen.inventory_label_y(),
+            ),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use rewo_world::menu_layout::{PLAYER, REGISTRY};
+
+    fn by_name(name: &str) -> &'static rewo_world::menu_layout::MenuLayout {
+        REGISTRY.iter().find(|l| l.name == name).unwrap()
+    }
+
+    fn at(labels: &[ContainerLabel], text: LabelText) -> Option<(i32, i32)> {
+        labels.iter().find(|l| l.text == text).map(|l| (l.x, l.y))
+    }
+
+    fn title_at(name: &str, title_width: i32) -> (i32, i32) {
+        at(
+            &container_labels(by_name(name), |_| title_width),
+            LabelText::Title,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_plain_container_draws_its_title_and_the_inventory_label_without_a_shadow() {
+        let chest = container_labels(by_name("generic_9x3"), |_| 30);
+        assert_eq!(at(&chest, LabelText::Title), Some((8, 6)));
+        // imageHeight 114 + 3 * 18 = 168; the label is 94 above the bottom.
+        assert_eq!(at(&chest, LabelText::PlayerInventory), Some((8, 74)));
+        assert!(chest.iter().all(|l| l.color == 0x404040 && !l.shadow));
+    }
+
+    #[test]
+    fn the_players_own_screen_draws_only_the_crafting_title_at_97() {
+        let l = container_labels(&PLAYER, |_| 30);
+        assert_eq!(l.len(), 1);
+        assert_eq!(at(&l, LabelText::Title), Some((97, 6)));
+    }
+
+    #[test]
+    fn a_furnace_centres_its_title_on_the_panel() {
+        // (176 - 36) / 2
+        assert_eq!(title_at("furnace", 36), (70, 6));
+    }
+
+    #[test]
+    fn the_title_rows_and_columns_the_constructors_move() {
+        assert_eq!(title_at("loom", 10).1, 4, "titleLabelY -= 2");
+        assert_eq!(title_at("cartography_table", 10).1, 4, "titleLabelY -= 2");
+        assert_eq!(title_at("stonecutter", 10).1, 5, "titleLabelY--");
+        assert_eq!(title_at("smithing", 10), (44, 15));
+        assert_eq!(title_at("anvil", 10), (60, 6));
+        assert_eq!(title_at("crafting", 10), (29, 6));
+    }
+
+    #[test]
+    fn the_beacon_draws_two_centred_shadowed_labels_and_no_title() {
+        let l = container_labels(by_name("beacon"), |t| match t {
+            LabelText::PrimaryPower => 60,
+            _ => 80,
+        });
+        assert_eq!(l.len(), 2);
+        assert_eq!(at(&l, LabelText::PrimaryPower), Some((62 - 30, 10)));
+        assert_eq!(at(&l, LabelText::SecondaryPower), Some((169 - 40, 10)));
+        assert!(l.iter().all(|l| l.shadow && l.color == 0xE0E0E0));
+    }
+
+    #[test]
+    fn the_merchant_centres_its_title_right_of_the_trade_list() {
+        let l = container_labels(by_name("merchant"), |t| match t {
+            LabelText::Title => 51,
+            _ => 31,
+        });
+        // 49 + 276 / 2 - 51 / 2
+        assert_eq!(at(&l, LabelText::Title), Some((49 + 138 - 25, 6)));
+        assert_eq!(at(&l, LabelText::PlayerInventory), Some((107, 72)));
+        // 5 - 31 / 2 + 48
+        assert_eq!(at(&l, LabelText::Trades), Some((5 - 15 + 48, 6)));
+    }
+
+    #[test]
+    fn a_menu_with_no_screen_draws_no_labels() {
+        assert!(container_labels(by_name("lectern"), |_| 10).is_empty());
+    }
+
+    #[test]
+    fn a_mount_screen_uses_the_default_label_rows() {
+        let layout = rewo_world::menu_layout::mount_layout(
+            rewo_world::menu_layout::MountKind::Horse,
+            3,
+            true,
+            false,
+        )
+        .unwrap();
+        let l = container_labels(layout, |_| 20);
+        assert_eq!(at(&l, LabelText::Title), Some((8, 6)));
+        assert_eq!(at(&l, LabelText::PlayerInventory), Some((8, 72)));
+    }
+}
+
+// -- the loom's banner preview ------------------------------------------------
+
+/// `LoomScreen.extractBackground`'s `graphics.bannerPattern(flag, baseColor,
+/// patterns, x0, y0, x0 + 20, y0 + 40)` at `x0 = leftPos + 141`,
+/// `y0 = topPos + 8`: the flag drawn into a 20x40 box.
+pub const LOOM_FLAG_X: i32 = 141;
+pub const LOOM_FLAG_Y: i32 = 8;
+pub const LOOM_FLAG_W: i32 = 20;
+pub const LOOM_FLAG_H: i32 = 40;
+
+/// The flag's front face in a 64x64 banner texture: the 20x40x1 cuboid at
+/// `texOffs(0, 0)` shows its front at (1, 1).
+pub const LOOM_FLAG_SRC: (i32, i32) = (1, 1);
+
+/// The banner the loom previews: the result slot's colour and the layer the
+/// pattern slot is about to add.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoomFlag {
+    /// The result banner's `BannerItem.getColor()`, as an index into
+    /// `block_entity_models::DYE_COLORS`.
+    pub base: usize,
+    /// The selected pattern and the dye slot's colour: the layer the result
+    /// stack gains. `None` when the selection names no pattern.
+    pub layer: Option<(&'static str, usize)>,
+    /// Whether the input banner already carries layers. They are on the
+    /// result's `banner_patterns` too, but no decoded form of them reaches
+    /// the screen yet, so a `true` here is a preview missing those layers.
+    pub prior_layers: bool,
+}
+
+/// The `DyeColor` index of an item named `minecraft:<colour>_<suffix>`
+/// (`_dye`, `_banner`), or `None` for any other name.
+pub fn dye_index_of(item_name: &str, suffix: &str) -> Option<usize> {
+    let stem = item_name
+        .strip_prefix("minecraft:")
+        .unwrap_or(item_name)
+        .strip_suffix(suffix)?;
+    rewo_data::block_entity_models::DYE_COLORS
+        .iter()
+        .position(|c| *c == stem)
+}
+
+/// What `LoomScreen` previews, or `None` when it draws no flag
+/// (`resultBannerPatterns == null || hasMaxPatterns`).
+///
+/// `result` and `dye` are the item names in the result and dye slots,
+/// `selected` the data slot's pattern index into `patterns`. A dye slot that
+/// names no dye reads as white, `getOrDefault(DYE, WHITE)`.
+pub fn loom_flag(
+    result: Option<&str>,
+    dye: Option<&str>,
+    selected: i32,
+    patterns: &[&'static str],
+    has_max: bool,
+    prior_layers: bool,
+) -> Option<LoomFlag> {
+    if has_max {
+        return None;
+    }
+    let base = dye_index_of(result?, "_banner")?;
+    let colour = dye.and_then(|d| dye_index_of(d, "_dye")).unwrap_or(0);
+    let layer = usize::try_from(selected)
+        .ok()
+        .and_then(|i| patterns.get(i))
+        .map(|p| (*p, colour));
+    Some(LoomFlag {
+        base,
+        layer,
+        prior_layers,
+    })
+}
+
+/// The tooltip key of a pattern button: the pattern's `translationKey()`, a
+/// dot, then the dye's name (`LoomScreen.extractBackground`). The vanilla
+/// registry's `translation_key` is `block.minecraft.banner.<name>`. The dye is
+/// the dye slot's colour index, white when it names none.
+pub fn loom_pattern_tooltip_key(pattern: &str, dye: usize) -> String {
+    let stem = pattern.strip_prefix("minecraft:").unwrap_or(pattern);
+    let colour = rewo_data::block_entity_models::DYE_COLORS
+        .get(dye)
+        .copied()
+        .unwrap_or("white");
+    format!("block.minecraft.banner.{stem}.{colour}")
+}
+
+/// The flag's destination and source in the panel: the same blit for every
+/// layer, only the sprite and tint change.
+pub fn loom_flag_blit() -> ProgressBlit {
+    ProgressBlit {
+        dx: LOOM_FLAG_X,
+        dy: LOOM_FLAG_Y,
+        w: LOOM_FLAG_W,
+        h: LOOM_FLAG_H,
+        sx: LOOM_FLAG_SRC.0,
+        sy: LOOM_FLAG_SRC.1,
+        src: None,
+    }
+}
+
+#[cfg(test)]
+mod loom_flag_tests {
+    use super::*;
+
+    #[test]
+    fn colours_come_from_the_item_names() {
+        assert_eq!(dye_index_of("minecraft:white_banner", "_banner"), Some(0));
+        assert_eq!(dye_index_of("minecraft:red_dye", "_dye"), Some(14));
+        assert_eq!(
+            dye_index_of("minecraft:light_gray_banner", "_banner"),
+            Some(8)
+        );
+        assert_eq!(dye_index_of("minecraft:red_dye", "_banner"), None);
+        assert_eq!(dye_index_of("minecraft:shield", "_banner"), None);
+    }
+
+    #[test]
+    fn the_flag_needs_a_result_banner_and_no_overfull_banner() {
+        let pats = ["minecraft:border", "minecraft:flower"];
+        let f = loom_flag(
+            Some("minecraft:white_banner"),
+            Some("minecraft:red_dye"),
+            1,
+            &pats,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(f.base, 0);
+        assert_eq!(f.layer, Some(("minecraft:flower", 14)));
+        assert!(
+            loom_flag(None, Some("minecraft:red_dye"), 1, &pats, false, false).is_none(),
+            "an empty result slot previews nothing"
+        );
+        assert!(
+            loom_flag(
+                Some("minecraft:white_banner"),
+                Some("minecraft:red_dye"),
+                1,
+                &pats,
+                true,
+                false
+            )
+            .is_none(),
+            "hasMaxPatterns draws the error sprite instead"
+        );
+    }
+
+    #[test]
+    fn a_selection_outside_the_list_adds_no_layer() {
+        let pats = ["minecraft:border"];
+        for selected in [-1, 1, 99] {
+            let f = loom_flag(
+                Some("minecraft:blue_banner"),
+                Some("minecraft:red_dye"),
+                selected,
+                &pats,
+                false,
+                false,
+            )
+            .unwrap();
+            assert_eq!((f.base, f.layer), (11, None), "selected {selected}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_buttons_tooltip_key_is_the_patterns_with_the_dyes_colour() {
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:flower", 14),
+            "block.minecraft.banner.flower.red"
+        );
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:stripe_top", 8),
+            "block.minecraft.banner.stripe_top.light_gray"
+        );
+        assert_eq!(
+            loom_pattern_tooltip_key("minecraft:border", 99),
+            "block.minecraft.banner.border.white",
+            "no dye reads as white"
+        );
+    }
+
+    #[test]
+    fn the_flag_box_is_the_decompiled_one() {
+        // x0 = leftPos + 141, y0 = topPos + 8, to (x0 + 20, y0 + 40).
+        let b = loom_flag_blit();
+        assert_eq!((b.dx, b.dy, b.w, b.h), (141, 8, 20, 40));
+        assert_eq!(b.source_size(), (20, 40));
     }
 }

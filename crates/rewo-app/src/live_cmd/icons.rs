@@ -858,3 +858,119 @@ pub(crate) fn item_props(
         },
     })
 }
+
+/// The title `extractLabels` draws, as a styled line on the labels' base
+/// colour: the server's component resolved against the language table, so a
+/// custom name keeps its colour and a vanilla chest reads "Chest".
+///
+/// * The player's own screen has no component: `container.crafting`.
+/// * A mount menu's title was resolved when it opened.
+/// * A merchant with a level and a progress bar draws
+///   `Component.translatable("merchant.title", title, "merchant.level.N")`
+///   (`MerchantScreen.extractLabels`, levels 1..=5), flattened here to one
+///   span.
+pub(super) fn container_title_line(
+    open: Option<&rewo_world::menu::OpenMenu>,
+    merchant: Option<&MerchantView>,
+    lang: &rewo_data::lang::Language,
+) -> rewo_world::chat_style::ChatLine {
+    use rewo_world::chat_style::{self, ChatStyle};
+    let base_color = [0x40 as f32 / 255.0; 3];
+    let base = ChatStyle::plain(base_color);
+    let span_of = |text: &str| {
+        let mut s = plain_span(text);
+        s.color = base_color;
+        s
+    };
+    let Some(open) = open else {
+        return vec![span_of(lang.or_key("container.crafting"))];
+    };
+    let line = match &open.title_component {
+        Some(nbt) => chat_style::parse_component(nbt, base, Some(lang)),
+        None => vec![span_of(&open.title)],
+    };
+    let leveled = open.layout.protocol_id == rewo_ui::merchant_screen::MERCHANT_MENU_PROTOCOL_ID;
+    match merchant {
+        Some(v) if leveled && v.show_progress && (1..=5).contains(&v.level) => {
+            let level_key = format!("merchant.level.{}", v.level);
+            vec![span_of(&lang.translate(
+                "merchant.title",
+                &[&chat_style::plain_text(&line), lang.or_key(&level_key)],
+            ))]
+        }
+        _ => line,
+    }
+}
+
+/// `AbstractContainerScreen.extractLabels` (and its overrides): the title,
+/// the "Inventory" label and the merchant's and beacon's own, at the
+/// positions `rewo_ui::menu_screen::container_labels` gives, in the panel's
+/// placement (so a recipe book that shifted the panel shifts them too).
+///
+/// `open` is `None` for the player's own screen.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn container_label_lines(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    open: Option<&rewo_world::menu::OpenMenu>,
+    merchant: Option<&MerchantView>,
+    lang: &rewo_data::lang::Language,
+    advance: &[u8; 256],
+    w: f32,
+    h: f32,
+    book_open: bool,
+) -> Vec<rewo_gpu::world::OwnedTextLine> {
+    use rewo_ui::menu_screen::{container_labels, LabelText};
+    let title = container_title_line(open, merchant, lang);
+    let key = |t: LabelText| match t {
+        LabelText::Title => "",
+        LabelText::PlayerInventory => "container.inventory",
+        LabelText::Trades => "merchant.trades",
+        LabelText::PrimaryPower => "block.minecraft.beacon.primary",
+        LabelText::SecondaryPower => "block.minecraft.beacon.secondary",
+    };
+    let width = |t: LabelText| match t {
+        LabelText::Title => styled_line_width(&title, advance),
+        t => rewo_gpu::text::width(lang.or_key(key(t)), advance),
+    };
+    let (left, top, scale) = rewo_gpu::container::gui_origin_placed(
+        w,
+        h,
+        rewo_gpu::container::Placement::with_book(
+            layout.image_w as f32,
+            layout.image_h as f32,
+            book_open,
+        ),
+    );
+    let mut out = Vec::new();
+    for label in container_labels(layout, width) {
+        let spans = match label.text {
+            LabelText::Title => title.clone(),
+            t => {
+                let mut s = plain_span(lang.or_key(key(t)));
+                s.color = [
+                    ((label.color >> 16) & 0xFF) as f32 / 255.0,
+                    ((label.color >> 8) & 0xFF) as f32 / 255.0,
+                    (label.color & 0xFF) as f32 / 255.0,
+                ];
+                vec![s]
+            }
+        };
+        let mut pen = label.x;
+        for span in &spans {
+            if !span.text.is_empty() {
+                out.push(rewo_gpu::world::OwnedTextLine {
+                    x: left + pen as f32 * scale,
+                    y: top + label.y as f32 * scale,
+                    px: scale,
+                    color_linear: srgb_bytes_to_linear_f(span.color),
+                    alpha: 1.0,
+                    shadow: label.shadow,
+                    style: text_style_of(span),
+                    text: span.text.clone(),
+                });
+            }
+            pen += rewo_gpu::text::width_styled(&span.text, advance, span.bold);
+        }
+    }
+    out
+}

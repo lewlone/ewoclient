@@ -634,7 +634,7 @@ pub enum ComponentValue {
 /// | `lib.rs`'s Configuration-state disconnect | On the live path (`into_play` calls `run_configuration`), but `Connection` holds no language table and `GameData` deliberately does not carry one. Also reaches a log line, not a screen. |
 /// | `session.rs`'s MOTD | **Nothing renders it.** `ServerData.motd` is drawn by `ServerSelectionList`, a pre-join screen Rewo has not got; its only readers here are `abilityshot` witnesses. |
 /// | `suggestion_wire.rs`'s tooltip | `Suggestion::tooltip` has no renderer, AND `selector.rs` discards the six `argument.entity.selector.*` keys it already stores, AND `Opt::description` is `""` for all 21 options. Fixing the wire third alone is unobservable. |
-/// | `menu.rs`'s container title | `OpenMenu::title` has **zero readers**: the label is not drawn. Drawing it without this would write `container.chest` across every vanilla chest, so it is ship-both-or-neither. |
+/// | `menu.rs`'s container title | Resolved at draw time: `OpenMenu::title_component` keeps the NBT and the screen flattens it against the language table. `OpenMenu::title` stays the unresolved flatten, for logs and witnesses. |
 /// | `tab_list_text.rs`'s `renders_empty` | Deliberate and documented there: with no table a translatable is never "empty". Handing it one is a behaviour change for servers shipping an empty template. (It calls `chat_style::flatten(.., None)` — the table is what is missing, not the walk.) |
 /// | `chat_wire.rs`'s `trust_level` | Feeds `ChatTrustLevel`, not a render. Threading a table would change trust answers with nothing asserting them. |
 /// | `enchantment_parse.rs`'s `nbt_plain` | Already structurally right: it splits `(description_key, literal)` so the **renderer** resolves the key. |
