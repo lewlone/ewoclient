@@ -2865,6 +2865,9 @@ pub(crate) fn apply_set_entity_data<'a>(
     if kinds.classes.is_some_and(|c| c.is_item_frame(type_id)) {
         if let Some(f) = meta.direction8 {
             entities.set_frame_facing(eid, f);
+            // `onSyncedDataUpdated(DATA_DIRECTION)` → `setDirection` →
+            // `recalculateBoundingBox`.
+            entities.place_hanging(eid, f);
         }
         if let Some(item) = meta.frame_item {
             entities.set_frame_item(eid, item);

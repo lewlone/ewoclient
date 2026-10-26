@@ -256,6 +256,55 @@ pub static CAMEL_WALK: KfDef = KfDef {
     ],
 };
 
+/// CAMEL_IDLE (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\CamelAnimation.java | 4 channels, 0 scale skipped)
+pub static CAMEL_IDLE: KfDef = KfDef {
+    length: 4.0,
+    looping: false,
+    channels: &[
+        KfChannel {
+            part: "tail",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0872664626, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 1.0, v: [0.0869360718, 0.0075961965, -0.0869360718], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0870430605, -0.00513545679, 0.0587730899], catmullrom: true },
+                KfFrame { t: 4.0, v: [0.0872664626, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "head",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 0.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 2.0, v: [-0.0436332313, 0.0, 0.0], catmullrom: true },
+                KfFrame { t: 4.0, v: [0.0, 0.0, 0.0], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "left_ear",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 2.5, v: [0.0, 0.0, -0.785398163], catmullrom: true },
+                KfFrame { t: 2.625, v: [0.0, 0.0, 0.392699082], catmullrom: true },
+                KfFrame { t: 2.75, v: [0.0, 0.0, -0.785398163], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, 0.392699082], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, -0.785398163], catmullrom: true },
+            ],
+        },
+        KfChannel {
+            part: "right_ear",
+            target: KfTarget::Rot,
+            frames: &[
+                KfFrame { t: 2.5, v: [0.0, 0.0, 0.785398163], catmullrom: true },
+                KfFrame { t: 2.625, v: [0.0, 0.0, -0.392699082], catmullrom: true },
+                KfFrame { t: 2.75, v: [0.0, 0.0, 0.785398163], catmullrom: true },
+                KfFrame { t: 2.875, v: [0.0, 0.0, -0.392699082], catmullrom: true },
+                KfFrame { t: 3.0, v: [0.0, 0.0, 0.785398163], catmullrom: true },
+            ],
+        },
+    ],
+};
+
 /// SNIFFER_WALK (C:\Users\valtteri\AppData\Roaming\EwoClient\rewo\26.2\decompiled\net\minecraft\client\animation\definitions\SnifferAnimation.java | 17 channels, 0 scale skipped)
 pub static SNIFFER_WALK: KfDef = KfDef {
     length: 2.0,

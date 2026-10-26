@@ -1359,7 +1359,12 @@ impl RenderCheck {
     const EXPECTED_RENDER_CHECK_WITNESSES: usize = 231;
     /// M361 — r213: the rider's offset from its mount may change this much
     /// a frame (blocks, horizontal): a camel's seat swings with its body
-    /// yaw. Before M361 it jumped by a tick's travel at every tick.
+    /// yaw. Before M361 it jumped by a tick's travel at every tick. A
+    /// REARING horse is exempt, frame by frame: `AbstractHorse
+    /// .getPassengerAttachmentPoint` adds `(0, 0.15, -0.7) * standAnimO`
+    /// turned by the yaw, and `standAnimO` rises 0.45, 0.72, 0.88, ... over
+    /// the ticks after a jump, so vanilla's rider slides back 0.7 * 0.45 =
+    /// 0.3 blocks in one tick, a part of that per frame.
     const RIDE_LEAD_JUMP_MAX: f64 = 0.05;
 
     pub(super) fn report(&self) -> bool {
