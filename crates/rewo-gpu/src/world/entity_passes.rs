@@ -508,6 +508,10 @@ impl WorldRenderer {
     pub fn set_preview(&mut self, draw: Option<(&EntityDraw<'_>, [[f32; 4]; 4], vk::Rect2D)>) {
         match (draw, self.preview.as_mut()) {
             (Some((d, vp, rect)), Some(pass)) => {
+                // M438 — a GUI entity takes `ENTITY_IN_UI`'s lights, in its
+                // pose's space: `rotateX(yAngle · 20°)`, which both previews
+                // draw with `pitch = −yAngle · 20°` (vanilla's `xRot`).
+                pass.ui_light = Some((-d.pitch).to_radians());
                 // The camera basis only orients billboards — nametags — and the
                 // preview draws none, so any orthonormal pair will do.
                 pass.set_draws(

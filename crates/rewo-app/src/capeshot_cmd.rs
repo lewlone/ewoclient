@@ -46,7 +46,7 @@ use crate::stats::OverlayRing;
 
 /// 38 for the vanilla cape (M60), 26 for the wavy one (M61), 5 for M64 (the
 /// re-projected collision + the inventory preview's cape).
-const EXPECTED_WITNESSES: usize = 77;
+const EXPECTED_WITNESSES: usize = 78;
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 256;
@@ -2093,6 +2093,36 @@ fn check_pixels(
                     window.2,
                     window.3,
                     magenta(&p_bare)
+                ),
+            );
+            // M438 — the preview's faces take vanilla's `ENTITY_IN_UI` light
+            // pair, not the level's. The turned-away model shows the cape's
+            // outer face to the viewer, hanging at the cape's rest tilt
+            // (`PlayerCapeModel`: 6 degrees), so in the GUI pose (after
+            // `rotateZ(PI)` and `scale(1, 1, -1)`) its normal is
+            // `(0, sin 6, cos 6)`. With `INVENTORY_DIFFUSE_LIGHT_0` =
+            // `(0.2, -1, 1)` normalised that is `0.623 * 0.6 + 0.4` = 0.774 of
+            // the magenta sheet's 255, about 197 (the second light misses it);
+            // the level's pair lights the same face 0.687, about 175. The
+            // window is 190..=205.
+            let mut reds: Vec<u8> = {
+                let (x, y, w, h) = window;
+                (y..(y + h).min(H))
+                    .flat_map(|row| {
+                        (x..(x + w).min(W)).map(move |col| (row * W + col) as usize * 4)
+                    })
+                    .filter(|&i| p_back[i] > 150 && p_back[i + 2] > 150 && p_back[i + 1] < 90)
+                    .map(|i| p_back[i])
+                    .collect()
+            };
+            reds.sort_unstable();
+            let median = reds.get(reds.len() / 2).copied().unwrap_or(0);
+            c.record(
+                "p10.the_preview_is_lit_by_the_gui_pair",
+                (190..=205).contains(&median),
+                format!(
+                    "the turned-away cape's median red byte {median} over {} px                      (want 190..=205: 0.774 of 255 under `ENTITY_IN_UI` at the cape's                      6-degree rest tilt; the level's pair gives about 175)",
+                    reds.len()
                 ),
             );
             c.record(

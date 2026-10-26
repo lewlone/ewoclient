@@ -1503,13 +1503,59 @@ pub(crate) fn mix_light(n: [f32; 3], nether: bool) -> f32 {
     ((dot(l0) + dot(l1)) * 0.6 + 0.4).min(1.0)
 }
 
-/// [`mix_light`] for a normal in [`shade_for`]'s sense (a static-folded
+/// M438 — [`mix_light`] for an entity drawn in a GUI (the inventory and
+/// mount previews): `Lighting.Entry.ENTITY_IN_UI`'s pair,
+/// `INVENTORY_DIFFUSE_LIGHT_0/1` = `(0.2, −1, 1)` and `(−0.2, −1, 0)`
+/// normalised, which live in the GUI pose's space, so the world normal first
+/// takes the pose `extractEntityInInventoryFollowsMouse` and
+/// `PictureInPictureRenderer` give it: `rotateX(x_rot)` (the mouse's
+/// `yAngle · 20°`), `rotateZ(π)`, `scale(1, 1, −1)`. Rewo's preview turns
+/// the MODEL half a turn about y where vanilla turns the camera
+/// (`container::preview_view_proj`), so `n` (Rewo's preview-space normal)
+/// takes that `rotateY(π)` first to be vanilla's entity normal. Facing the
+/// viewer that is front 0.82, top 1.0, sides about 0.5, back and bottom
+/// 0.4; the level's pair, which the preview used until M438, lit the front
+/// 0.74.
+pub(crate) fn mix_light_ui(n: [f32; 3], x_rot: f32) -> f32 {
+    let (s, c) = x_rot.sin_cos();
+    // Rewo's model half turn, undone: vanilla's entity normal.
+    let n = [-n[0], n[1], -n[2]];
+    let n = [n[0], c * n[1] - s * n[2], s * n[1] + c * n[2]];
+    // `rotateZ(π)` then `scale(1, 1, −1)`.
+    let n = [-n[0], -n[1], -n[2]];
+    let unit = |v: [f32; 3]| {
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len < 1e-6 {
+            [0.0; 3]
+        } else {
+            [v[0] / len, v[1] / len, v[2] / len]
+        }
+    };
+    let n = unit(n);
+    let dot = |l: [f32; 3]| {
+        let l = unit(l);
+        (l[0] * n[0] + l[1] * n[1] + l[2] * n[2]).max(0.0)
+    };
+    ((dot([0.2, -1.0, 1.0]) + dot([-0.2, -1.0, 0.0])) * 0.6 + 0.4).min(1.0)
+}
+
+/// M438 — the light an entity face takes: a GUI preview's pair when `ui`
+/// holds its pose's x rotation, else the level's ([`mix_light`]).
+pub(crate) fn entity_light(n: [f32; 3], nether: bool, ui: Option<f32>) -> f32 {
+    match ui {
+        Some(x_rot) => mix_light_ui(n, x_rot),
+        None => mix_light(n, nether),
+    }
+}
+
+/// [`entity_light`] for a normal in [`shade_for`]'s sense (a static-folded
 /// model-space normal, or a world quad's [`face_normal`]-style winding
 /// normal, both of which point world-DOWN on a top face): its negation is
-/// the outward world normal. The two lights are symmetric under
-/// `(x, z) → (−x, −z)`, so only the vertical sense has to be right.
-pub(crate) fn mix_light_flipped(n: [f32; 3], nether: bool) -> f32 {
-    mix_light([-n[0], -n[1], -n[2]], nether)
+/// the outward world normal (the whole vector, for a consistently wound
+/// quad; the level's pair is symmetric under `(x, z) → (−x, −z)`, the GUI
+/// pair is not, so a preview face needs all three components right).
+pub(crate) fn entity_light_flipped(n: [f32; 3], nether: bool, ui: Option<f32>) -> f32 {
+    entity_light([-n[0], -n[1], -n[2]], nether, ui)
 }
 
 /// Directional shade for a static-folded model-space normal, matching the
@@ -18392,6 +18438,27 @@ mod dragon_pose_tests {
         // The Nether's second light points down: a floor's underside is lit.
         assert!(mix_light([0.0, -1.0, 0.0], true) > 0.8);
         // `shade_for`'s convention: world-down normal on a top face.
-        assert!(close(mix_light_flipped([0.0, -1.0, 0.0], false), 1.0));
+        assert!(close(
+            entity_light_flipped([0.0, -1.0, 0.0], false, None),
+            1.0
+        ));
+    }
+
+    /// M438 — the GUI pair against vanilla's pose for a player facing the
+    /// viewer (body yaw 180: in Rewo's preview space its front faces +z, the
+    /// viewer), mouse level.
+    #[test]
+    fn mix_light_ui_is_vanillas_inventory_pair() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(close(mix_light_ui([0.0, 0.0, 1.0], 0.0), 0.8203), "front");
+        assert!(close(mix_light_ui([0.0, 1.0, 0.0], 0.0), 1.0), "top");
+        assert!(close(mix_light_ui([0.0, 0.0, -1.0], 0.0), 0.4), "back");
+        assert!(close(mix_light_ui([0.0, -1.0, 0.0], 0.0), 0.4), "bottom");
+        let sides = [
+            mix_light_ui([1.0, 0.0, 0.0], 0.0),
+            mix_light_ui([-1.0, 0.0, 0.0], 0.0),
+        ];
+        assert!(sides.iter().all(|s| (0.45..0.55).contains(s)), "{sides:?}");
+        assert!(close(entity_light([0.0, 1.0, 0.0], false, None), 1.0));
     }
 }

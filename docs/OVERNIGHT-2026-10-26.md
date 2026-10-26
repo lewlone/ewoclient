@@ -45,7 +45,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   lean toward the sky, the sun had no halo), M435 (clouds follow the
   options: off is off, and the deck reaches vanilla's 128 chunks), M436
   (entities take vanilla's two-light shading by world normal), M437 (the
-  dragon head draws, from the ender dragon's own sheet); the
+  dragon head draws, from the ender dragon's own sheet), M438 (the
+  inventory and mount previews take vanilla's GUI lights); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -155,6 +156,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
 | `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
 | `174b195b` | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
+| (next) | **M438** — the previews take vanilla's `ENTITY_IN_UI` lights; capeshot p10 |
 
 ## A broken default build, fixed
 
@@ -238,9 +240,8 @@ major bumps, so the next weekly group arrives without it.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
 - ~~Entities shade in linear space~~: M433 (and dyed armour with them).
-- ~~Entity face shading is a table, not vanilla's two lights~~: M436.
-  Left: the inventory preview still lights as the level, where vanilla uses
-  its `ENTITY_IN_UI` pair.
+- ~~Entity face shading is a table, not vanilla's two lights~~: M436;
+  the previews' `ENTITY_IN_UI` pair M438.
 - ~~The sky reads too light~~: M434 (noon and midnight now byte-exact
   against vanilla on the harness).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
