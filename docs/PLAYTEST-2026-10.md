@@ -1,0 +1,186 @@
+# Rewo vs vanilla playtest (2026-10-26)
+
+The shared playtest harness (`Desktop\playtest-harness`, phase 3) now drives Rewo. Each scenario in
+`tools/playtest/` is played twice on one fresh vanilla 26.2 server: once by vanilla's own client (the
+harness's Fabric "puppet") and once by Rewo (`REWO_SCRIPT`, `live_cmd/script.rs`). The runs are then
+compared frame by frame (SSIM per region, side-by-sides), sound by sound (id, volume, pitch, position,
+and the variant each play resolved) and tick by tick (position trace, server corrections). Opus
+reviews the flagged frames. Neither client shows a window or touches the cursor.
+
+    python tools/playtest.py                  # all 21 scenarios, both clients, compare
+    python tools/playtest.py rewo_hud --review
+
+## In one paragraph
+
+Rewo gets a lot right: walking physics matches vanilla to four decimals on every tick, the boat's
+path to 0.02 blocks, server sounds arrive with the right position, volume and pitch, and the book,
+crafting, stonecutter, loom and options sounds all match. The riding HUD, held maps, the air bar
+and the book screen look like vanilla's. The big gaps are:
+
+- **Shading.** Everything is too bright and flat, and night looks like dusk. Terrain shading
+  happens in the wrong colour space. A verified fix is on a separate branch.
+- **Missing own sounds.** Rewo plays none of the player's own sounds: steps, place, break, doors,
+  hurt.
+- **HUD and screen elements missing.** No stack counts, offhand slot, container titles, banner
+  icons or furnace output.
+
+Two bugs are fixed on this branch: unseeded sounds always played the same variant, and chests,
+beds and shulker boxes couldn't be targeted.
+
+Renderer-level differences (anti-aliasing, mipmaps, font hinting, the Velvet tooltip style) are
+expected and not listed. **A difference here is a finding, not a verdict.**
+
+## Fixed on this branch (tests, gates.py 51/51 and the render check green)
+
+1. **Chests, beds and shulker boxes could not be targeted.** `rewo_containers`: every right-click
+   on a chest opened nothing, and the harness's click log showed Rewo's crosshair target as `null`
+   where vanilla's was the chest. The bake derived a state-dependent outline from the block model,
+   and a chest's model (`builtin/entity`) has no geometry, so the outline was empty and the ray went
+   straight through. Such a block now takes the shape `special_collision` already transcribes;
+   `block_entity_rendered_blocks_are_targetable` fails without the fix. Rerun: every chest and
+   barrel opens.
+2. **Unseeded sounds played one variant forever.** UI clicks, page turns, music and underwater
+   additions always resolved with seed 0: 3/3 page turns were `open_flip1`, 9/9 music picks were
+   `dry_hands`. `SoundEngine::resolve` now draws a splitmix64 seed stream (deterministic per engine;
+   not a counter, see soundshot's `s6` note). Rerun: page turns vary.
+
+## Verified, not merged: shading in the wrong colour space (branch `claude/rewo-srgb-terrain`)
+
+Every Rewo frame is 10-30% brighter than vanilla's, with flat side faces, grey-blue grass and a
+dusk-like midnight. `rewo-gpu/shaders/world.frag` multiplies the texel, which the sRGB image has
+already decoded to **linear**, by `v_color` (vertex colour × lightmap), whose factors are
+sRGB-space numbers. Vanilla does the multiply and the fog mix on gamma-encoded values, so in Rewo
+every factor f acts as f^(1/2.2). On `rewo_lighting`'s white concrete:
+
+| RGB | vanilla | Rewo now | Rewo with the fix |
+|---|---|---|---|
+| north face (shade 0.8), noon | 155 159 160 | 182 187 188 | 155 159 160 |
+| west face (shade 0.6), noon | 123 126 127 | 163 168 169 | 123 126 127 |
+| grass, noon | 84 104 51 | 112 124 88 | 85 106 52 |
+| grass, midnight | 64 72 37 | 99 104 74 | 65 73 37 |
+
+The fix encodes the texel, multiplies, fogs with the encoded fog colour and decodes once, in
+`world.frag` and `water.frag`. With it Rewo matches vanilla within 1-2 levels, and `cargo test`
+(4614) and the render check pass. It isn't merged for three reasons:
+
+- **`lightmapshot` encodes the old model.** Its 58 expected values are `to_srgb(lm)` for a white
+  texel, while vanilla's byte is `255·lm`, which the fix renders exactly (lm 0.1804 → 46). The gate
+  needs re-deriving from vanilla's arithmetic.
+- **`tools/demo_hash.txt`** needs re-pinning.
+- **Other passes have the same multiply.** `hand.frag` and `particle.frag` do it too, and the sky is
+  too light at night. They should be fixed in the same change, or the hand looks brighter still
+  next to correct terrain.
+
+## Findings
+
+### Sound
+
+- **None of the player's own sounds play** (`rewo_audio_blocks` 1 of 21, `rewo_walk` 0 of 5,
+  `rewo_maps` 1 of 20). Missing: footsteps on every material, block place, break and hit, door
+  open/close, `entity.player.hurt` and `hurt_drown` (`rewo_hud`, `rewo_drowning`), the blocks'
+  `animateTick` sounds (`block.water.ambient` 26 times in `rewo_maps`; a lit furnace's
+  `fire_crackle`) and the rain ambience (`weather.rain`, `rewo_sky_weather`). Vanilla plays all of
+  these locally (`level.playSound(player, ...)`: the server sends them to everyone except the player).
+  Rewo has no block `SoundType` table and none of these call sites. A feature to build.
+- Server-sent sounds are right: 9/9 positional `playsound` events (`rewo_audio_distance`); the
+  horse's and camel's steps, gallops and dash; the boat's paddling (8/8, within a tick; vanilla's own runs vary by a tick too); chest and barrel open/close (all 8).
+  Pitches differ only by the server's random.
+
+### HUD
+
+- No **offhand slot**; no **stack counts** in the hotbar (32, 16, 5, 8 arrows); no **compass**
+  icon (in the hotbar or the hand).
+- **Creative mode** still shows hearts and hunger (vanilla hides them).
+- **F1** hides only the sidebar, the tab list and name labels. Vanilla's `Hud.isHidden` also hides
+  the crosshair, hotbar and bars, effects, boss bar, action bar, title, chat, the hand
+  (`renderItemInHand`) and the block outline.
+- No **attack-cooldown indicator**; no **"Press Left Shift to Dismount"** message when mounting.
+- The **crosshair** is plain white (vanilla's inverts what is behind it) and stays drawn over menus.
+
+### World and entities
+
+- The **block outline** is a broken 1-pixel line; vanilla's is a solid line about 2 pixels wide.
+- **Underwater** there is no fog or tint: vanilla goes dark blue, Rewo stays bright
+  (`rewo_drowning`). Water surfaces are pale grey-blue (partly the colour-space issue).
+- No **entity shadows** (`rewo_horse`, `rewo_mobs`).
+- A **standing sign** draws its text with no board or post (`rewo_blocks`).
+- The **farmer villager** has no profession outfit (`rewo_mobs`).
+- A **map in an item frame** hangs about half a block lower than vanilla's (`rewo_maps`).
+- Grass block sides under water show a bright green fringe at the pond's edge (`rewo_boat`).
+- **Holding a block item:** the first-person block is mostly hidden behind the hotbar, and behind
+  an open container a giant copy of the block fills the view (`rewo_containers`, `rewo_audio_blocks`).
+- **Sky** (`rewo_sky_weather`): no sunrise or sunset glow and no dusk dimming; clouds are drawn
+  although `options.txt` has `renderClouds:"false"`.
+- **Horse jump physics:** the horse jumps, but the rider's second-tick rise is 0.61 where vanilla's
+  is 0.68, and the apex ends 0.15 blocks lower (`rewo_horse`, positions log). Worth checking
+  against `AbstractHorse`'s jump in the decompile.
+- **In a boat** Rewo shows the arm while paddling and no oar pieces at the bottom corners (Opus,
+  `rewo_boat`).
+- **Arrows** (Opus, `rewo_bow`): none is visible in flight right after release, and a weak shot's
+  arrow on the ground is small and dark. Vanilla shows both.
+- **Camel** (Opus, `rewo_camel`): the head and ears don't animate while walking or dashing.
+
+### Screens
+
+- Container screens draw **no title and no "Inventory" label** (Crafting, Chest, Barrel, Furnace,
+  Loom, Stonecutter).
+- The **furnace output slot is empty**: both furnaces smelted three raw iron (5 of 8 left), and
+  vanilla shows 3 iron ingots in the output where Rewo shows nothing.
+- **No tooltips** over the stonecutter's recipe buttons or the loom's patterns. Item-slot tooltips
+  work.
+- The **banner item has no icon** (loom banner and result slots), and the loom's **banner preview**
+  is an empty panel; the pattern list, selection and scrolling are right.
+- **Recipe book:** with the book open, the player model is drawn at the old panel position on top
+  of the book while the player box is empty. The first tab's icon and the craftable filter button
+  are missing, and the book lists 29 pages where vanilla's lists 11 (recipes not grouped into
+  collections?).
+- The **carried stack** on the cursor seems not to be drawn in the stonecutter (Opus).
+- The held-item name ("Map") is drawn **on top of an open inventory**.
+- No **menu background blur**. The options screens draw no background at all, so the HUD and hand
+  show through.
+- **Options:** Rewo's Options screen has three buttons where vanilla has the FOV slider, World
+  Options and a grid of ten. The pause menu lacks the icon-button row.
+- The inventory's player model and the first-person arm use **Steve**; vanilla uses the default skin
+  the offline UUID picks.
+
+### What matches
+
+- **Physics:** the walk matches to four decimals on every tick; the boat to 0.019 blocks; horse and
+  camel rides follow the same path within a block until the dismount.
+- **Riding HUD:** the horse's hearts and the charged jump bar are pixel-identical at this scale.
+- **Held maps** in both hands, one hand and the offhand, with the map's colours and player marker.
+- **Air bar:** it drains bubble by bubble at vanilla's rate and pops with `ui.hud.bubble_pop` every
+  30 ticks, but each pop comes 6-9 ticks after vanilla's (vanilla pops at 1, 29, 59 ... 264; Rewo at
+  7, 38, 68 ... 244, so it has popped 9 times by tick 360 where vanilla has popped 10).
+- **Screens:** the book (text, arrows, page counter, hover), the crafting table, the stonecutter's
+  recipe grid and counts, the loom's pattern grid and scroll, and the options sound page. All
+  button, slider, page-turn, stonecutter and loom sounds match (UI 5/5, stonecutter 2/2,
+  loom 2/2, recipe book 2/2, book 3/3).
+
+## Enni's lists
+
+| item | scenario | state |
+|---|---|---|
+| ride a horse / a camel | `rewo_horse`, `rewo_camel` | works; HUD right; no dismount hint, no shadows; horse jump apex 0.15 lower; camel head static (Opus) |
+| shoot arrows | `rewo_bow` | works, sticks; arrow not visible in flight (Opus) |
+| float a boat | `rewo_boat` | works, path matches, inside of the hull dry; arm shown, oars missing, water colour |
+| the HUD | `rewo_hud` | layout right; counts, offhand slot, compass, F1, creative bars wrong |
+| button and slider click sounds | `rewo_ui_options` | 5/5 match; Options screen cut down |
+| page turns | `rewo_book` | match (and now vary) |
+| stonecutter and loom sounds | `rewo_stonecutter`, `rewo_loom` | match; tooltips, banner icons and preview missing |
+| drowning bubbles | `rewo_drowning` | bubbles and pops match; no underwater fog; no hurt sound |
+| recipe-book button | `rewo_recipe_book` | opens and closes, button sound; player model drawn over the book |
+| crafting table and furnace | `rewo_crafting_furnace` | open and work; no titles; furnace output not shown |
+| maps in one and two hands, tooltips, markers | `rewo_maps` | hand poses and markers right; frame map low, held-item name over the screen |
+| loom pattern scrolling | `rewo_loom` | scrolls right |
+| audio listening checklist (§4) | `rewo_audio_blocks`, `rewo_audio_distance`, all | variant variety: was broken, fixed; distance and stereo positions match for server sounds; the player's own sounds are missing; clip ends, glitching and music remain for ears |
+
+## Opus was wrong here (checked against the logs)
+
+- "The horse never jumps and the jump bar stays empty": the positions log shows a 3-block jump,
+  and a crop of the bar is identical to vanilla's.
+- "The zombie and skeleton burn in Rewo": undead catch fire at random in daylight during the ticks
+  before `/tick freeze`, on separate servers. The scenario now gives them helmets.
+- In the first batch, missed boardings and a misaimed furnace click were scenario bugs, now fixed.
+
+Every Opus finding in this report was checked against a crop or a log unless it says "(Opus)".

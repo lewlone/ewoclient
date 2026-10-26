@@ -22,7 +22,7 @@ world:
     - setblock -6 -60 9 minecraft:chest[facing=north]
     - setblock -4 -60 9 minecraft:red_bed[facing=south,part=foot]
     - setblock -4 -60 10 minecraft:red_bed[facing=south,part=head]
-    - setblock -2 -60 9 minecraft:oak_sign[rotation=0]{front_text:{messages:['"Rewo"','"playtest"','""','""']}}
+    - setblock -2 -60 9 minecraft:oak_sign[rotation=8]{front_text:{messages:["Rewo","playtest","",""]}}
     - setblock 0 -60 9 minecraft:white_banner[rotation=0]
     - setblock 2 -60 9 minecraft:skeleton_skull[rotation=8]
     - setblock 4 -60 9 minecraft:oak_door[facing=north,half=lower]

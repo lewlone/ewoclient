@@ -3510,7 +3510,7 @@ mod tests {
             "minecraft:item.book.page_turn",
             &SoundEventRegistration {
                 sounds: (1..=4)
-                    .map(|i| Sound::file(&format!("minecraft:item/book/open_flip{i}")))
+                    .map(|i| Sound::file(format!("minecraft:item/book/open_flip{i}")))
                     .collect(),
                 replace: false,
                 subtitle: None,

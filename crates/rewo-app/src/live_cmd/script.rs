@@ -537,10 +537,7 @@ impl LiveApp {
             self.script_note_target(&what);
             self.script_mouse_button(event_loop, b, true);
             // A click is a press and a release, unless the key is held.
-            let held = self
-                .script
-                .as_ref()
-                .is_some_and(|s| s.held.iter().any(|h| *h == what));
+            let held = self.script.as_ref().is_some_and(|s| s.held.contains(&what));
             if !held {
                 self.script_mouse_button(event_loop, b, false);
             }
@@ -914,6 +911,12 @@ impl LiveApp {
                     "sprinting": self.keys.sprint && self.keys.w,
                     "crouching": p.crouching,
                     "mounted": session.is_mounted(),
+                    // The state fields the puppet logs beside the position.
+                    "gliding": p.pose == rewo_world::physics::Pose::FallFlying,
+                    "health": session.health,
+                    "food": session.food,
+                    "using_item": session.local_use_state().using,
+                    "selected": session.inventory.selected(),
                 }));
                 if let Some(name) = s.capture_at_tail.take() {
                     s.capture = Some(PendingCapture {
