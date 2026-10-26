@@ -73,11 +73,19 @@ fn main() {
     .map(|(src, dst)| (src, dst, None))
     // M306 — `ENTITY_TRANSLUCENT`: the entity shader again, its cutout at
     // vanilla's 0.1 and its colour encoded for the gamma-space blend.
-    .chain([(
-        "shaders/entity.frag",
-        "entity_translucent.frag.spv",
-        Some("-DGAMMA_OUT"),
-    )]) {
+    .chain([
+        (
+            "shaders/entity.frag",
+            "entity_translucent.frag.spv",
+            Some("-DGAMMA_OUT"),
+        ),
+        // M430 — the first-person hand's glint, faded by the world's fog.
+        (
+            "shaders/gui_glint.frag",
+            "hand_glint.frag.spv",
+            Some("-DHAND_FOG"),
+        ),
+    ]) {
         println!("cargo:rerun-if-changed=shaders/lightmap.glsl");
         println!("cargo:rerun-if-changed={src}");
         let output = Command::new(&glslc)

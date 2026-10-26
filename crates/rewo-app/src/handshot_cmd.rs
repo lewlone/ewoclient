@@ -35,7 +35,7 @@ use rewo_gpu::Gpu;
 
 use crate::stats::OverlayRing;
 
-const EXPECTED_WITNESSES: usize = 43;
+const EXPECTED_WITNESSES: usize = 44;
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const W: u32 = 640;
 const H: u32 = 360;
@@ -943,6 +943,58 @@ fn check_pixels(c: &mut Checker, args: &HandshotArgs) -> Result<(), String> {
                 "{fog_px} of the hand's {hand_px} px are the fog colour {want:?} under a band \
                  ending at 0.01 blocks; the cleared band's frame equals the unfogged one: {}",
                 cleared == rest
+            ),
+        );
+
+        // M430 — the hand's glint fades with the same fog: in clear air an
+        // enchanted hand differs from a plain one; under a band ending at
+        // 0.01 blocks the two frames are the same, the sheen faded to 0.
+        let sheet: Vec<u8> = (0..16 * 16).flat_map(|_| [200u8, 200, 200, 255]).collect();
+        wr.init_hand_glint(&mut gpu, &sheet, 16, 16)?;
+        let glint = rewo_gpu::hand::build_glint_vertices(
+            Mat4::IDENTITY,
+            &[rewo_gpu::hand::HandDraw {
+                arm: Arm::Right,
+                item: Some(&item),
+                attack: 0.0,
+                inverse_height: 0.0,
+                swings: rewo_gpu::hand::SwingKind::Whack,
+                main_hand: true,
+                glint: true,
+                using: None,
+                is_shield: false,
+            }],
+            1000.0,
+        );
+        let gshot = |gpu: &mut Gpu,
+                     off: &mut Offscreen,
+                     wr: &mut WorldRenderer,
+                     with_glint: bool|
+         -> Result<Vec<u8>, String> {
+            let g: &[rewo_gpu::gui_item::GuiItemVertex] = if with_glint { &glint } else { &[] };
+            wr.set_hand_with_glint(gpu, &rest_verts, g, vp)?;
+            off.render(gpu, Some((&mut *wr, vp)), &draw, CLEAR)?;
+            off.read_rgba(gpu)
+        };
+        let (clear_glint, clear_plain) = (
+            gshot(&mut gpu, &mut off, &mut wr, true)?,
+            gshot(&mut gpu, &mut off, &mut wr, false)?,
+        );
+        wr.set_env_fog([0.0, 0.01]);
+        let (fog_glint, fog_plain) = (
+            gshot(&mut gpu, &mut off, &mut wr, true)?,
+            gshot(&mut gpu, &mut off, &mut wr, false)?,
+        );
+        wr.set_env_fog([1.0e9, 1.0e9 + 1.0]);
+        c.record(
+            "g9.the_hands_glint_fades_in_the_fog",
+            !glint.is_empty() && clear_glint != clear_plain && fog_glint == fog_plain,
+            format!(
+                "{} glint vertices; in clear air the glint shows: {}; under the full \
+                 band the glinting frame equals the plain one: {}",
+                glint.len(),
+                clear_glint != clear_plain,
+                fog_glint == fog_plain
             ),
         );
 

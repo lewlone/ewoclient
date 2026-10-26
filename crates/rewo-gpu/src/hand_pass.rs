@@ -332,6 +332,15 @@ impl HandPass {
                 0,
                 std::slice::from_raw_parts(view_proj.as_ptr() as *const u8, 64),
             );
+            // M430 — the fog the glint fades by.
+            let fog = self.fog.get();
+            device.cmd_push_constants(
+                cb,
+                self.layout,
+                vk::ShaderStageFlags::FRAGMENT,
+                64,
+                std::slice::from_raw_parts(fog.as_ptr() as *const u8, 32),
+            );
             device.cmd_bind_vertex_buffers(cb, 0, &[vbuf], &[0]);
             device.cmd_draw(cb, self.glint_verts, 1, self.vert_count, 0);
         }
@@ -482,7 +491,8 @@ fn build_glint_pipeline(
         )?;
         let frag = crate::overlay::create_shader(
             device,
-            include_bytes!(concat!(env!("OUT_DIR"), "/gui_glint.frag.spv")),
+            // M430 — the fog-faded variant.
+            include_bytes!(concat!(env!("OUT_DIR"), "/hand_glint.frag.spv")),
         )?;
         let entry = c"main";
         let stages = [

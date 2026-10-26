@@ -4023,6 +4023,10 @@ closed by a later entry — M98's "Rewo has no overlay" was closed by M104, M93z
 rewriting them would falsify the record. **§0.0 carries the current numbers and
 the current open list; read a §15 gap claim as history, not as status.***
 
+### M430 — the hand's glint fades in the fog (2026-10-26)
+
+M423's leftover. Vanilla's glint is `(1 − fog) · GlintAlpha`, and the hand inherits the world's fog, so in water, lava or blindness its enchantment sheen fades with it. `gui_glint.frag` is compiled a second time with `-DHAND_FOG` as `hand_glint.frag` (the GUI and preview glints keep the unfogged one): it reads the hand's fog words and `hand.vert`'s `v_dist` and multiplies the sheen by `1 − linear_fog_value` over the environmental band; the hand pass's glint pipeline uses it and pushes the fog range too. **handshot g9** (in clear air an enchanted hand differs from a plain one; under a band ending at 0.01 blocks the two frames are byte-identical).
+
 ### M429 — donkey and mule foals walk, look, rear and graze (2026-10-26)
 
 M428's sibling. `BabyDonkeyModel` (the donkey's and the mule's foal) hangs its legs, neck group and tail from the body and overrides `setupAnim`: the look pitch forced to −30° (so the neck group's π/6 base cancels: it rests at 0, its box keeping its own 0.3927), eating at π/2, the head group at `lerp(eating, −3, −1.2)` and `lerp(standing, −5, −3.6)`; the legs brace at π/3 with no standing tilt, the front ones rise 1 and come 0.5 forward, the hind ones lerp to −0.3. Two vanilla quirks are kept: `setupAnim` copies the left front leg's height and z into the right's every frame (so the right sits at the left's −5.3, not its own −5.4), and `offsetLegPositionWhenStanding` lerps the right hind leg from the left's already-moved height. Rewo's foal (M334) was static folds with the legs on the quadruped walk; it is now parts as vanilla's, `Anim::EquineHeadDonkeyFoal` / `EquineLegDonkeyFoal` (the tail shares M428's `EquineTailFoal`). **mobtexshot m128** (rearing moves 553 px; grazing the top drops 18 rows — its long ears are the top standing, so rearing is graded by what it moves; looked at); the foal tests read the parts.

@@ -32,10 +32,36 @@ layout(location = 1) in float v_alpha;
 
 layout(location = 0) out vec4 out_color;
 
+#ifdef HAND_FOG
+// M430 — compiled again as the first-person hand's glint: vanilla's `fade =
+// (1 - fog) · GlintAlpha` with the world's environmental fog, which the hand
+// inherits (M423; the render-distance band never reaches a hand).
+layout(push_constant) uniform Fog {
+    layout(offset = 64) vec4 fog_col; // unused here
+    vec4 env_fog;                     // x environmental start, y its end
+} fog;
+
+layout(location = 2) in float v_dist;
+
+// `fog.glsl`'s `linear_fog_value` (M421).
+float linear_fog_value(float d, float s, float e) {
+    if (d <= s) {
+        return 0.0;
+    } else if (d >= e) {
+        return 1.0;
+    }
+    return (d - s) / (e - s);
+}
+#endif
+
 void main() {
     vec4 c = texture(u_glint, v_uv);
     if (c.a < 0.1) {
         discard;
     }
-    out_color = vec4(c.rgb * v_alpha, c.a);
+    float fade = v_alpha;
+#ifdef HAND_FOG
+    fade *= 1.0 - linear_fog_value(v_dist, fog.env_fog.x, fog.env_fog.y);
+#endif
+    out_color = vec4(c.rgb * fade, c.a);
 }

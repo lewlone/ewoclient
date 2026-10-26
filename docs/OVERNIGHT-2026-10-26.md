@@ -36,7 +36,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   first-person hand fogs with the world), M424 (render check r230: the
   live client under water draws the water's fog), M425 (and its clouds
   fade at the water's band, r231), M426 (horses graze), M427 (the fog darkens toward the void, under y −32), M428 (foals walk,
-  look, rear and graze), M429 (donkey and mule foals too); the
+  look, rear and graze), M429 (donkey and mule foals too), M430 (the hand's glint fades in
+  the fog); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -138,6 +139,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `2f8a563a` | **M427** — the fog darkens toward the void; unit test |
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
 | `0cb644fb` | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
+| (next) | **M430** — the hand's glint fades in the fog; handshot g9 |
 
 ## A broken default build, fixed
 
@@ -197,7 +199,7 @@ major bumps, so the next weekly group arrives without it.
   the boss bar's world darkening, the open air's cloud fade
   (Rewo pins a 12-chunk deck where vanilla's range defaults to 128).
 - ~~Entities take no fog at all~~: done in M412; the first-person hand
-  in M423. Left: the hand's glint does not fade in fog.
+  in M423; its glint in M430.
 - ~~A dropped or framed trident shows its 3D model~~: M419 (and the
   spyglass and spears).
 - Corrected follow-up: the swirls (M285-M287) not reaching a glowing
