@@ -93,7 +93,8 @@ pub struct MenuScreen {
     pub image_w: i32,
     pub image_h: i32,
     pub title_x: TitleX,
-    /// `titleLabelY`, 6 unless overridden (only `smithing`, at 15).
+    /// `titleLabelY`, 6 unless the constructor moves it: `smithing` sets 15,
+    /// `loom` and `cartography_table` subtract 2 (4), `stonecutter` 1 (5).
     pub title_y: i32,
     /// `inventoryLabelX`, 8 unless overridden (only `merchant`, at 107).
     pub inventory_label_x: i32,
@@ -172,6 +173,14 @@ const fn centered(texture: &'static str) -> Option<MenuScreen> {
     })
 }
 
+/// As [`plain`], with `titleLabelY` moved (`titleLabelY -= 2` and the like).
+const fn title_y(texture: &'static str, y: i32) -> Option<MenuScreen> {
+    Some(MenuScreen {
+        title_y: y,
+        ..*plain(texture).as_ref().unwrap()
+    })
+}
+
 /// As [`plain`], with the title at a literal x.
 const fn titled(texture: &'static str, x: i32) -> Option<MenuScreen> {
     Some(MenuScreen {
@@ -225,7 +234,8 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
     }),
     // lectern -- a BookViewScreen, not a container screen.
     None,
-    plain("textures/gui/container/loom.png"),
+    // `LoomScreen`: `this.titleLabelY -= 2`.
+    title_y("textures/gui/container/loom.png", 4),
     Some(MenuScreen {
         texture: "textures/gui/container/villager.png",
         image_w: 276,
@@ -263,8 +273,10 @@ pub static SCREENS: &[Option<MenuScreen>] = &[
         sheet_h: 256.0,
     }),
     centered("textures/gui/container/smoker.png"),
-    plain("textures/gui/container/cartography_table.png"),
-    plain("textures/gui/container/stonecutter.png"),
+    // `CartographyTableScreen`: `this.titleLabelY -= 2`.
+    title_y("textures/gui/container/cartography_table.png", 4),
+    // `StonecutterScreen`: `this.titleLabelY--`.
+    title_y("textures/gui/container/stonecutter.png", 5),
 ];
 
 /// `HorseInventoryScreen` (M220): `horse.png`, the default 176 x 166 panel
@@ -3879,5 +3891,223 @@ mod mount_tests {
             "no strip on a nautilus"
         );
         assert!(mount_overlays(false, 0, false, false).is_empty());
+    }
+}
+
+// -- the labels every container screen draws ---------------------------------
+
+/// Which string a container label shows. The caller owns the strings (the
+/// title is the server's component, the rest are lang keys) and the widths;
+/// [`container_labels`] owns where each goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelText {
+    /// The menu's title (`AbstractContainerScreen.title`); for the player's
+    /// own inventory `container.crafting`, for a merchant with its level
+    /// appended (`merchant.title`).
+    Title,
+    /// `playerInventoryTitle`, `container.inventory`.
+    PlayerInventory,
+    /// `MerchantScreen.TRADES_LABEL`, `merchant.trades`.
+    Trades,
+    /// `BeaconScreen.PRIMARY_EFFECT_LABEL`, `block.minecraft.beacon.primary`.
+    PrimaryPower,
+    /// `BeaconScreen.SECONDARY_EFFECT_LABEL`, `block.minecraft.beacon.secondary`.
+    SecondaryPower,
+}
+
+/// One label, at a panel-relative GUI pixel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerLabel {
+    pub text: LabelText,
+    pub x: i32,
+    pub y: i32,
+    /// `0xRRGGBB`.
+    pub color: u32,
+    pub shadow: bool,
+}
+
+/// `-12566464`, the colour of the title and inventory labels, drawn with no
+/// drop shadow (`graphics.text(font, text, x, y, -12566464, false)`).
+pub const LABEL_COLOR: u32 = 0x404040;
+
+/// `-2039584`, the beacon's two effect labels, which use the default shadow.
+pub const BEACON_LABEL_COLOR: u32 = 0xE0E0E0;
+
+/// `InventoryScreen`'s `titleLabelX`; its `titleLabelY` is the default 6.
+pub const PLAYER_TITLE_X: i32 = 97;
+
+/// The labels `extractLabels` draws for a menu, in draw order.
+///
+/// `width` is `font.width` of the string [`LabelText`] names, for the labels
+/// that are centred or right of a computed x. Transcribed from
+/// `AbstractContainerScreen.extractLabels` (the title at `titleLabelX/Y`, then
+/// `playerInventoryTitle` at `inventoryLabelX/Y`) and its overrides:
+///
+/// * `InventoryScreen` draws only the title (`container.crafting`, at x 97);
+/// * `BeaconScreen` draws neither, only its two centred effect labels at
+///   x 62 and 169, y 10;
+/// * `MerchantScreen` centres its title on 49 + imageWidth / 2, adds the
+///   "Trades" label centred on 53, and moves the inventory label to x 107;
+/// * `AnvilScreen` calls `super` and adds the cost line, which the app draws
+///   separately.
+///
+/// Empty for a menu with no container screen (the lectern).
+pub fn container_labels(
+    layout: &rewo_world::menu_layout::MenuLayout,
+    width: impl Fn(LabelText) -> i32,
+) -> Vec<ContainerLabel> {
+    let label = |text, x, y| ContainerLabel {
+        text,
+        x,
+        y,
+        color: LABEL_COLOR,
+        shadow: false,
+    };
+    if layout.protocol_id == rewo_world::menu_layout::NO_PROTOCOL_ID {
+        return vec![label(LabelText::Title, PLAYER_TITLE_X, 6)];
+    }
+    let Some(screen) = screen_for(layout) else {
+        return Vec::new();
+    };
+    match layout.name {
+        "beacon" => [
+            (LabelText::PrimaryPower, 62),
+            (LabelText::SecondaryPower, 169),
+        ]
+        .into_iter()
+        .map(|(text, x)| ContainerLabel {
+            text,
+            x: x - width(text) / 2,
+            y: 10,
+            color: BEACON_LABEL_COLOR,
+            shadow: true,
+        })
+        .collect(),
+        "merchant" => {
+            let trades = width(LabelText::Trades);
+            vec![
+                label(
+                    LabelText::Title,
+                    49 + screen.image_w / 2 - width(LabelText::Title) / 2,
+                    6,
+                ),
+                label(
+                    LabelText::PlayerInventory,
+                    screen.inventory_label_x,
+                    screen.inventory_label_y(),
+                ),
+                label(LabelText::Trades, 5 - trades / 2 + 48, 6),
+            ]
+        }
+        _ => vec![
+            label(
+                LabelText::Title,
+                screen.title_x(width(LabelText::Title)),
+                screen.title_y,
+            ),
+            label(
+                LabelText::PlayerInventory,
+                screen.inventory_label_x,
+                screen.inventory_label_y(),
+            ),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use rewo_world::menu_layout::{PLAYER, REGISTRY};
+
+    fn by_name(name: &str) -> &'static rewo_world::menu_layout::MenuLayout {
+        REGISTRY.iter().find(|l| l.name == name).unwrap()
+    }
+
+    fn at(labels: &[ContainerLabel], text: LabelText) -> Option<(i32, i32)> {
+        labels.iter().find(|l| l.text == text).map(|l| (l.x, l.y))
+    }
+
+    fn title_at(name: &str, title_width: i32) -> (i32, i32) {
+        at(
+            &container_labels(by_name(name), |_| title_width),
+            LabelText::Title,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_plain_container_draws_its_title_and_the_inventory_label_without_a_shadow() {
+        let chest = container_labels(by_name("generic_9x3"), |_| 30);
+        assert_eq!(at(&chest, LabelText::Title), Some((8, 6)));
+        // imageHeight 114 + 3 * 18 = 168; the label is 94 above the bottom.
+        assert_eq!(at(&chest, LabelText::PlayerInventory), Some((8, 74)));
+        assert!(chest.iter().all(|l| l.color == 0x404040 && !l.shadow));
+    }
+
+    #[test]
+    fn the_players_own_screen_draws_only_the_crafting_title_at_97() {
+        let l = container_labels(&PLAYER, |_| 30);
+        assert_eq!(l.len(), 1);
+        assert_eq!(at(&l, LabelText::Title), Some((97, 6)));
+    }
+
+    #[test]
+    fn a_furnace_centres_its_title_on_the_panel() {
+        // (176 - 36) / 2
+        assert_eq!(title_at("furnace", 36), (70, 6));
+    }
+
+    #[test]
+    fn the_title_rows_and_columns_the_constructors_move() {
+        assert_eq!(title_at("loom", 10).1, 4, "titleLabelY -= 2");
+        assert_eq!(title_at("cartography_table", 10).1, 4, "titleLabelY -= 2");
+        assert_eq!(title_at("stonecutter", 10).1, 5, "titleLabelY--");
+        assert_eq!(title_at("smithing", 10), (44, 15));
+        assert_eq!(title_at("anvil", 10), (60, 6));
+        assert_eq!(title_at("crafting", 10), (29, 6));
+    }
+
+    #[test]
+    fn the_beacon_draws_two_centred_shadowed_labels_and_no_title() {
+        let l = container_labels(by_name("beacon"), |t| match t {
+            LabelText::PrimaryPower => 60,
+            _ => 80,
+        });
+        assert_eq!(l.len(), 2);
+        assert_eq!(at(&l, LabelText::PrimaryPower), Some((62 - 30, 10)));
+        assert_eq!(at(&l, LabelText::SecondaryPower), Some((169 - 40, 10)));
+        assert!(l.iter().all(|l| l.shadow && l.color == 0xE0E0E0));
+    }
+
+    #[test]
+    fn the_merchant_centres_its_title_right_of_the_trade_list() {
+        let l = container_labels(by_name("merchant"), |t| match t {
+            LabelText::Title => 51,
+            _ => 31,
+        });
+        // 49 + 276 / 2 - 51 / 2
+        assert_eq!(at(&l, LabelText::Title), Some((49 + 138 - 25, 6)));
+        assert_eq!(at(&l, LabelText::PlayerInventory), Some((107, 72)));
+        // 5 - 31 / 2 + 48
+        assert_eq!(at(&l, LabelText::Trades), Some((5 - 15 + 48, 6)));
+    }
+
+    #[test]
+    fn a_menu_with_no_screen_draws_no_labels() {
+        assert!(container_labels(by_name("lectern"), |_| 10).is_empty());
+    }
+
+    #[test]
+    fn a_mount_screen_uses_the_default_label_rows() {
+        let layout = rewo_world::menu_layout::mount_layout(
+            rewo_world::menu_layout::MountKind::Horse,
+            3,
+            true,
+            false,
+        )
+        .unwrap();
+        let l = container_labels(layout, |_| 20);
+        assert_eq!(at(&l, LabelText::Title), Some((8, 6)));
+        assert_eq!(at(&l, LabelText::PlayerInventory), Some((8, 72)));
     }
 }

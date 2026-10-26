@@ -43,6 +43,11 @@ pub struct OpenMenu {
     pub layout: &'static MenuLayout,
     /// The flattened title text.
     pub title: String,
+    /// The title as the server sent it, for the screen to resolve against the
+    /// language table and style: a vanilla chest's is
+    /// `{"translate":"container.chest"}`, which `title` holds as the bare key.
+    /// `None` for a mount menu, whose `title` is already resolved.
+    pub title_component: Option<rewo_proto::nbt::Nbt>,
     /// `container_set_data` values, indexed by data slot id.
     pub data: [i16; MAX_DATA_SLOTS],
     /// How many data writes this menu has taken (M93m).
@@ -553,6 +558,7 @@ impl Menus {
             container_id,
             layout,
             title,
+            title_component: None,
             data: [0; MAX_DATA_SLOTS],
             data_writes: 0,
             open_serial: self.opens,
@@ -581,6 +587,7 @@ impl Menus {
             container_id,
             layout,
             title,
+            title_component: None,
             data: [0; MAX_DATA_SLOTS],
             data_writes: 0,
             open_serial: self.opens,

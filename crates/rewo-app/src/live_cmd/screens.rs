@@ -805,6 +805,21 @@ pub(super) fn apply_screen(
     ) {
         labels.extend(enchant_cost_labels(rows, &font.advance, w, h));
     }
+    // `extractLabels`: the title, "Inventory" and the merchant's and beacon's
+    // own. Before the anvil's field so the cost line and the field's text, which
+    // vanilla draws after `super.extractLabels`, stay on top.
+    if let Some(font) = baked.font.as_ref() {
+        labels.extend(super::icons::container_label_lines(
+            layout,
+            session.menus.shown_open(),
+            merchant,
+            &baked.lang,
+            &font.advance,
+            w,
+            h,
+            book_open,
+        ));
+    }
     // The text and the append cursor are labels; the insert cursor and the
     // selection travelled with the panel as solid quads — M93q's `FILL_SPRITE`
     // doing the job it was built for, one screen over.
