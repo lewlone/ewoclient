@@ -26,8 +26,11 @@ steps:
   - {at: 2, expect_sound: minecraft:ui.cartography_table.take_result, window: 6}
   - {at: 40, look: {yaw: 0, pitch: 40}}
   - {at: 44, capture: two_hands, checklist: "the filled map held in both hands, centred low on screen: terrain colours, the stone wall, the pond and the plank block; a white player arrow in the middle"}
-  - {at: 46, command: "item replace entity @s weapon.offhand with minecraft:torch"}
-  - {at: 52, capture: one_hand, checklist: "the map held in the right hand only (smaller, to the right), a torch in the left hand"}
+  # The torch goes in 8 ticks before the capture: the off hand's equip dip (`offHandHeight` steps
+  # 0.4 a tick, down then up) takes about 6, and at exactly 6 the two clients caught it at
+  # different heights, a tick of packet timing apart.
+  - {at: 45, command: "item replace entity @s weapon.offhand with minecraft:torch"}
+  - {at: 53, capture: one_hand, checklist: "the map held in the right hand only (smaller, to the right), a torch in the left hand"}
   - {at: 54, command: "item replace entity @s weapon.offhand with minecraft:filled_map[map_id=0]"}
   - {at: 54, command: "item replace entity @s weapon.mainhand with minecraft:air"}
   - {at: 60, capture: offhand, checklist: "the map held in the left (off) hand, the right hand empty"}
