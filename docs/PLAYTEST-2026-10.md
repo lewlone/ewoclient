@@ -116,6 +116,25 @@ variant are random on both sides).
 Verified on db8177ea: cargo test 4732/0 (`REWO_REQUIRE_ASSETS=1`), gates.py 51/51, render check
 223 PASS / 0 FAIL with no validation message.
 
+11. **Riding and arrows** (worker): the horse rears on a jump (`AbstractHorse`'s stand clock from
+    the synced flags), and the rider's seat lift `0.15 * standAnimO` closes the 0.15-block apex
+    gap: the trace now rises 0.7, 0.675, 0.558, 0.453 like vanilla's. Critical arrows trail crit
+    particles; a landed arrow is lit at its eye, not inside its block; a ridden horse or camel
+    walks and looks where its rider does; a paddled boat lowers the hands (`isHandsBusy`); the
+    camel's idle rig holds its ears up. **Item frames and paintings** hang where the client
+    recomputes them (`recalculateBoundingBox` from the packet's block corner): the framed map was
+    half a block low and squashed. `rewo_horse`, `rewo_bow`, `rewo_boat` and `rewo_maps` match.
+12. **GUI** (worker): the recipe book applies `updateCollections`' three stages (a 3x3 recipe is
+    not listed in the 2x2 book; the craftable filter filters; tabs concatenate their categories in
+    order), so `rewo_recipe_book` lists vanilla's pages. The hotbar icons draw under an open
+    screen, and the screen's dim blends in gamma space (it was half as dark). An offline player
+    learns its UUID from `login_finished`, so it wears its default skin, not Steve.
+
+Branch merged into `claude/autonomous-run-1026` at a1ca707b (Enni's session), then continued from
+it. Verified on 95c7a8f1: cargo test 4802/0, gates.py 51/51; render check 228/231, with r70 (the
+injected item frame), r76 and r77 (clicks on the villager) failing after the frame-placement fix,
+being fixed.
+
 ### Corrections to the findings
 
 - **"The furnace output slot is empty" was the harness, not Rewo.** The server smelts in real
@@ -196,20 +215,20 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
 - **Fixed (phase B 9).** No **entity shadows** (`rewo_horse`, `rewo_mobs`).
 - **Fixed (phase B 9).** A **standing sign** draws its text with no board or post (`rewo_blocks`).
 - **Fixed (phase B 9).** The **farmer villager** has no profession outfit (`rewo_mobs`).
-- A **map in an item frame** hangs about half a block lower than vanilla's (`rewo_maps`).
+- **Fixed (phase B 11).** A **map in an item frame** hangs about half a block lower than vanilla's (`rewo_maps`).
 - Grass block sides under water show a bright green fringe at the pond's edge (`rewo_boat`).
 - **Explained and fixed (phase B 8).** **Holding a block item:** the first-person block is mostly hidden behind the hotbar, and behind
   an open container a giant copy of the block fills the view (`rewo_containers`, `rewo_audio_blocks`).
 - **Sky** (`rewo_sky_weather`): no sunrise or sunset glow and no dusk dimming; clouds are drawn
   although `options.txt` has `renderClouds:"false"` (**fixed, phase B 7**).
-- **Horse jump physics:** the horse jumps, but the rider's second-tick rise is 0.61 where vanilla's
+- **Fixed (phase B 11).** **Horse jump physics:** the horse jumps, but the rider's second-tick rise is 0.61 where vanilla's
   is 0.68, and the apex ends 0.15 blocks lower (`rewo_horse`, positions log). Worth checking
   against `AbstractHorse`'s jump in the decompile.
-- **In a boat** Rewo shows the arm while paddling and no oar pieces at the bottom corners (Opus,
+- **Fixed (phase B 11).** **In a boat** Rewo shows the arm while paddling and no oar pieces at the bottom corners (Opus,
   `rewo_boat`).
 - **Arrows** (Opus, `rewo_bow`): none is visible in flight right after release, and a weak shot's
   arrow on the ground is small and dark. Vanilla shows both.
-- **Camel** (Opus, `rewo_camel`): the head and ears don't animate while walking or dashing.
+- **Partly fixed (phase B 11: ears, ridden walk; the dash rig is open).** **Camel** (Opus, `rewo_camel`): the head and ears don't animate while walking or dashing.
 
 ### Screens
 
@@ -231,7 +250,7 @@ The fix encodes the texel, multiplies, fogs with the encoded fog colour and deco
   show through.
 - **Options:** Rewo's Options screen has three buttons where vanilla has the FOV slider, World
   Options and a grid of ten. The pause menu lacks the icon-button row.
-- The inventory's player model and the first-person arm use **Steve**; vanilla uses the default skin
+- **Fixed (phase B 12).** The inventory's player model and the first-person arm use **Steve**; vanilla uses the default skin
   the offline UUID picks.
 
 ### What matches
