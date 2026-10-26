@@ -137,6 +137,18 @@ pub enum Anim {
         left: bool,
     },
     EquineTailFoal,
+    /// M429 — `BabyDonkeyModel.setupAnim` (the donkey and mule foals): the
+    /// look pitch forced to -30 degrees, eating at π/2, the head group
+    /// lowered to an absolute -1.2 eating and set back `1.4·standing`; the
+    /// legs bracing at π/3 with no standing tilt, the front ones rising 1
+    /// and coming 0.5 forward (the right one copying the left's z, as
+    /// `setupAnim` does), the hind ones lerping to -0.3 (the right from the
+    /// left's new height, as `offsetLegPositionWhenStanding` does).
+    EquineHeadDonkeyFoal,
+    EquineLegDonkeyFoal {
+        hind: bool,
+        left: bool,
+    },
     /// M365 — `TurtleModel.setupAnim` on top of `QuadrupedModel`'s: each
     /// flipper keeps the quadruped's `xRot` swing; on land the flippers
     /// sweep (`yRot`: front ∓cos(pos·5·lay)·8·speed·layAmp, hind
@@ -7132,101 +7144,102 @@ fn bee_baby() -> Model {
 }
 
 /// M334 — `BabyDonkeyModel.createBabyLayer()` (64 x 64), the donkey's and
-/// the mule's: an 8 x 6 x 14 body, a tail tilted -0.7418, four 3 x 8 x 3 legs
-/// (children of the body; it never moves, so their pivots are the body's
-/// offset plus theirs) on the quadruped walk as Rewo's adult equine's, and
-/// the neck, head and ears. `BabyDonkeyModel.setupAnim` forces the look pitch
-/// to -30 degrees, so `head_parts`' π/6 base cancels and the neck rests at its
-/// own 0.3927 tilt; the head does not look, as Rewo's adult's does not. The
-/// chest parts carry no box (a foal carries no chest). M339: the box-less
-/// `tail` part rests where `AbstractEquineModel.setupAnim` puts it,
-/// `getTailXRotOffset()` (-π/4 for this model) + π/6 = -π/12, under its
-/// box's own -0.7418; M334 had left that term out.
+/// the mule's: an 8 x 6 x 14 body, a tail tilted -0.7418, four 3 x 8 x 3
+/// legs, and the neck, head and ears. The chest parts carry no box (a foal
+/// carries no chest). M339: the box-less `tail` part rests where
+/// `AbstractEquineModel.setupAnim` puts it, `getTailXRotOffset()` (-π/4 for
+/// this model) + π/6 = -π/12, under its box's own -0.7418.
+/// M429 — on parts, as vanilla's: the legs, the neck group and the tail are
+/// the body's children, posed by `BabyDonkeyModel`'s own `setupAnim`
+/// ([`Anim::EquineHeadDonkeyFoal`], [`Anim::EquineLegDonkeyFoal`]). It
+/// forces the look pitch to -30 degrees, so the neck group's π/6 base
+/// cancels and it rests at 0 (the neck box keeps its own 0.3927 tilt).
 fn donkey_baby() -> Model {
     let mut b = ModelBuilder::new();
-    let body = Fold::at([1.0, 14.0, 0.0]);
+    let body = b.part([1.0, 14.0, 0.0], Anim::EquineBody, 1.0);
     b.cube_f(
-        STATIC_PART,
+        body,
         0,
         (0.0, 13.0),
         [-5.0, -3.0, -7.0],
         [8.0, 6.0, 14.0],
         0.0,
         false,
-        &[body],
+        NONE,
+    );
+    let tail = b.part_ext(
+        [0.0, -1.5, 6.5],
+        [-PI / 12.0, 0.0, 0.0],
+        Anim::EquineTailFoal,
+        1.0,
+        Some(body),
     );
     b.cube_f(
-        STATIC_PART,
+        tail,
         0,
         (24.0, 33.0),
         [-2.5, -1.0, -0.5],
         [3.0, 3.0, 8.0],
         0.0,
         false,
-        &[
-            Fold::rot([-0.7418, 0.0, 0.0], [0.0, 0.0, 0.0]),
-            Fold::rot([-PI / 12.0, 0.0, 0.0], [0.0, -1.5, 6.5]),
-            body,
-        ],
+        &[Fold::rot([-0.7418, 0.0, 0.0], [0.0, 0.0, 0.0])],
     );
-    let head_parts = Fold::at([0.0, -3.0, -5.0]);
+    let neck = b.part_ext(
+        [0.0, -3.0, -5.0],
+        [0.0; 3],
+        Anim::EquineHeadDonkeyFoal,
+        1.0,
+        Some(body),
+    );
     b.cube_f(
-        STATIC_PART,
+        neck,
         0,
         (30.0, 9.0),
         [-3.0, -6.0, -3.0],
         [4.0, 8.0, 4.0],
         0.0,
         false,
-        &[
-            Fold::rot([0.3927, 0.0, 0.0], [0.0, 0.0, 0.0]),
-            head_parts,
-            body,
-        ],
+        &[Fold::rot([0.3927, 0.0, 0.0], [0.0, 0.0, 0.0])],
     );
     let head = Fold::at([0.0, -5.0, -3.0]);
     b.cube_f(
-        STATIC_PART,
+        neck,
         0,
         (0.0, 0.0),
         [-4.0, -3.6, -8.4],
         [6.0, 4.0, 9.0],
         0.0,
         false,
-        &[
-            Fold::rot([0.3927, 0.0, 0.0], [0.0, -1.0, 1.0]),
-            head,
-            head_parts,
-            body,
-        ],
+        &[Fold::rot([0.3927, 0.0, 0.0], [0.0, -1.0, 1.0]), head],
     );
     for (x, z_rot, uv, mirror) in [
         (2.0, 0.48, (0.0, 0.0), false),
         (-2.0, -0.48, (22.0, 0.0), true),
     ] {
         b.cube_f(
-            STATIC_PART,
+            neck,
             0,
             uv,
             [-2.0, -6.5, -0.3],
             [2.0, 7.0, 1.0],
             0.0,
             mirror,
-            &[
-                Fold::rot([0.48, 0.0, z_rot], [x, -3.5, -1.0]),
-                head,
-                head_parts,
-                body,
-            ],
+            &[Fold::rot([0.48, 0.0, z_rot], [x, -3.5, -1.0]), head],
         );
     }
-    for (pivot, anim, uv) in [
-        ([3.25, 17.5, 5.25], Anim::QuadHindLeft, (12.0, 44.0)),
-        ([-1.4, 17.5, 5.4], Anim::QuadHindRight, (0.0, 44.0)),
-        ([3.4, 17.5, -5.3], Anim::QuadFrontLeft, (12.0, 33.0)),
-        ([-1.4, 17.5, -5.4], Anim::QuadFrontRight, (0.0, 33.0)),
+    for (pivot, hind, left, uv) in [
+        ([2.25, 3.5, 5.25], true, true, (12.0, 44.0)),
+        ([-2.4, 3.5, 5.4], true, false, (0.0, 44.0)),
+        ([2.4, 3.5, -5.3], false, true, (12.0, 33.0)),
+        ([-2.4, 3.5, -5.4], false, false, (0.0, 33.0)),
     ] {
-        let leg = b.part(pivot, anim, 1.0);
+        let leg = b.part_ext(
+            pivot,
+            [0.0; 3],
+            Anim::EquineLegDonkeyFoal { hind, left },
+            1.0,
+            Some(body),
+        );
         b.cube(leg, 0, uv, [-2.5, -1.5, -1.5], [3.0, 8.0, 3.0], NONE);
     }
     b.finish(1.0)
@@ -16975,18 +16988,37 @@ mod foal_tests {
                 .map(|u| u[i])
                 .fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
         };
-        assert!(m.quads.iter().any(|q| q.part == STATIC_PART
+        // M429 — on the body part, which carries the legs.
+        let body = m
+            .parts
+            .iter()
+            .position(|p| p.anim == Anim::EquineBody)
+            .unwrap();
+        assert!(m.quads.iter().any(|q| q.part == body
             && q.facing == Facing::Down
             && (span(q, 0), span(q, 1)) == ((14.0, 22.0), (13.0, 27.0))));
+        assert!(m
+            .parts
+            .iter()
+            .filter(|p| matches!(p.anim, Anim::EquineLegDonkeyFoal { .. }))
+            .all(|p| p.parent == Some(body as u16)));
+        // The legs' pivots are their own offsets on the body (M334 added the
+        // body's (1, 14, 0) when they were root parts).
         let pivot = |a: Anim| m.parts.iter().find(|p| p.anim == a).unwrap().pivot;
         let near = |p: [f32; 3], q: [f32; 3]| (0..3).all(|i| (p[i] - q[i]).abs() < 1e-5);
         assert!(near(
-            pivot(Anim::QuadHindLeft),
-            [1.0 + 2.25, 14.0 + 3.5, 5.25]
+            pivot(Anim::EquineLegDonkeyFoal {
+                hind: true,
+                left: true
+            }),
+            [2.25, 3.5, 5.25]
         ));
         assert!(near(
-            pivot(Anim::QuadFrontRight),
-            [1.0 - 2.4, 14.0 + 3.5, -5.4]
+            pivot(Anim::EquineLegDonkeyFoal {
+                hind: false,
+                left: false
+            }),
+            [-2.4, 3.5, -5.4]
         ));
     }
 }
@@ -17162,11 +17194,15 @@ mod equine_foal_rest_tests {
     #[test]
     fn the_donkey_foal_s_tail_rests_where_setup_anim_puts_it() {
         let m = donkey_baby();
+        // M429 — the box's own tilt on the quads, the part's -π/12 rest.
         let tilt = north_tilt(&m, ((32.0, 35.0), (41.0, 44.0)));
-        assert!(
-            (tilt - (0.7418 + PI / 12.0)).abs() < 1e-4,
-            "tail tilt {tilt}"
-        );
+        assert!((tilt - 0.7418).abs() < 1e-4, "tail tilt {tilt}");
+        let tail = m
+            .parts
+            .iter()
+            .find(|p| p.anim == Anim::EquineTailFoal)
+            .unwrap();
+        assert!((tail.rot[0] + PI / 12.0).abs() < 1e-6);
     }
 }
 

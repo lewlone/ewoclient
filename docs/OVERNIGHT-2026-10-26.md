@@ -36,7 +36,7 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   first-person hand fogs with the world), M424 (render check r230: the
   live client under water draws the water's fog), M425 (and its clouds
   fade at the water's band, r231), M426 (horses graze), M427 (the fog darkens toward the void, under y −32), M428 (foals walk,
-  look, rear and graze); the
+  look, rear and graze), M429 (donkey and mule foals too); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.
@@ -137,6 +137,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `9d758e66` | **M426** — horses graze; mobtexshot m126 |
 | `2f8a563a` | **M427** — the fog darkens toward the void; unit test |
 | `1318834e` | **M428** — foals walk, look, rear and graze; mobtexshot m127 |
+| (next) | **M429** — donkey and mule foals walk, look, rear and graze; mobtexshot m128 |
 
 ## A broken default build, fixed
 
@@ -182,8 +183,7 @@ major bumps, so the next weekly group arrives without it.
 ## Follow-ups found, not done
 
 - ~~The horse family's rearing pose~~: M417 (adults); grazing M426.
-  Foals: M428. Left: the baby donkey and mule (`BabyDonkeyModel` hangs its
-  legs and head from the body and overrides `setupAnim`).
+  Foals: M428 and M429 (donkey and mule).
 - ~~The wavy cape takes only the death topple~~: M413 (a tilted wearer
   draws the vanilla cape).
 - ~~The inventory preview draws no armour~~: M414; its glints M418. Left:

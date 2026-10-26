@@ -105,10 +105,13 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 127;
+const EXPECTED_WITNESSES: usize = 128;
 /// M428 — m127's floor: rows a foal's top rises rearing and drops grazing.
 /// Before M428 the foal was static (0 by construction).
 const FOAL_ROWS_MIN: usize = 2;
+/// M429 — m128's floor: the pixels a donkey foal's rearing changes (it was
+/// static before M429).
+const DFOAL_REAR_MIN: usize = 150;
 /// M426 — m126's floor: how many pixel rows a grazing horse's top drops
 /// below a standing one's from the side (its raised head goes down).
 const GRAZE_TOP_MIN: usize = 4;
@@ -7626,6 +7629,13 @@ fn run_check(
     );
     // m126 — M426: the same horse grazing (`eatAnimation` 1).
     let rh_graze = rhshot(horse, 0.0, false, 1.0)?;
+    // m128 — M429: a donkey foal standing, rearing and grazing.
+    let dfoal = EntityModelKind::DonkeyBaby;
+    let (df_stand, df_rear, df_graze) = (
+        rhshot(dfoal, 0.0, false, 0.0)?,
+        rhshot(dfoal, 1.0, false, 0.0)?,
+        rhshot(dfoal, 0.0, false, 1.0)?,
+    );
     // m127 — M428: a foal standing, rearing and grazing.
     let foal = EntityModelKind::HorseBaby;
     let (fo_stand, fo_rear, fo_graze) = (
@@ -7644,6 +7654,8 @@ fn run_check(
         save_png(&rh_graze, cw, ch, &d.join("m126_horse_grazing.png"))?;
         save_png(&fo_rear, cw, ch, &d.join("m127_foal_rearing.png"))?;
         save_png(&fo_graze, cw, ch, &d.join("m127_foal_grazing.png"))?;
+        save_png(&df_rear, cw, ch, &d.join("m128_donkey_foal_rearing.png"))?;
+        save_png(&df_graze, cw, ch, &d.join("m128_donkey_foal_grazing.png"))?;
     }
     let changed = |a: &[u8], b: &[u8]| -> Vec<usize> {
         a.as_chunks::<4>()
@@ -7671,6 +7683,15 @@ fn run_check(
         top(&fo_stand).saturating_sub(top(&fo_rear)),
         top(&fo_graze).saturating_sub(top(&fo_stand)),
     );
+    // Its long ears are the top standing, so rearing is graded by the
+    // silhouette it moves rather than by its top.
+    let df_moved = changed(&df_rear, &df_stand).len();
+    let df_down = top(&df_graze).saturating_sub(top(&df_stand));
+    w.push(wit(
+        "m128.a_donkey_foal_rears_and_grazes",
+        df_moved >= DFOAL_REAR_MIN && df_down >= FOAL_ROWS_MIN,
+        format!("rearing moves {df_moved} px (want >= {DFOAL_REAR_MIN}), grazing its top drops {df_down} rows (want >= {FOAL_ROWS_MIN})"),
+    ));
     w.push(wit(
         "m127.a_foal_rears_and_grazes",
         fo_up >= FOAL_ROWS_MIN && fo_down >= FOAL_ROWS_MIN,

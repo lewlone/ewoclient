@@ -6236,6 +6236,41 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
             };
         }
         EquineBody => rot[0] = c.mob.stand_anim * -PI / 4.0,
+        // M429 — `BabyDonkeyModel.setupAnim` over `AbstractEquineModel`'s:
+        // `xRot = standing·(π/12 − π/6) + eating·(π/2 + wobble) + (1 −
+        // max)·(π/6 − π/6 + feeding·wobble)` over a rest of 0, the yaw as
+        // the adult's, the group at `lerp(eating, −3, −1.2)` and
+        // `lerp(standing, −5, −3.6)`.
+        EquineHeadDonkeyFoal => {
+            let (s, e) = (c.mob.stand_anim, c.mob.eat_anim);
+            let wobble = c.age.sin() * 0.05;
+            let free = 1.0 - s.max(e);
+            rot[0] = -s * PI / 12.0 + e * (PI / 2.0 + wobble) + free * c.mob.feeding_anim * wobble;
+            let yaw = c.net.clamp(-20f32.to_radians(), 20f32.to_radians());
+            rot[1] = s * yaw + free * yaw;
+            off = [0.0, e * 1.8, s * 1.4];
+        }
+        EquineLegDonkeyFoal { hind, left } => {
+            let s = c.mob.stand_anim;
+            let walk = 1.0 - s;
+            let leg = (c.f + PI).cos();
+            let bob = (c.age * 0.6 + PI).cos();
+            rot[0] = match (hind, left) {
+                (false, true) => bob * s + leg * 0.8 * c.amt * walk,
+                (false, false) => -bob * s - leg * 0.8 * c.amt * walk,
+                (true, true) => PI / 3.0 * s - leg * 0.5 * c.amt * walk,
+                (true, false) => PI / 3.0 * s + leg * 0.5 * c.amt * walk,
+            };
+            // Rest heights 3.5; the left front leg's z rest is −5.3, the
+            // right's −5.4 (it takes the left's every frame).
+            let left_hind = 3.5 + s * (-0.3 - 3.5);
+            off = match (hind, left) {
+                (false, true) => [0.0, -s, 0.5 * s],
+                (false, false) => [0.0, -s, 0.1 + 0.5 * s],
+                (true, true) => [0.0, left_hind - 3.5, 0.0],
+                (true, false) => [0.0, left_hind + s * (-0.3 - left_hind) - 3.5, 0.0],
+            };
+        }
         EquineLeg { hind, left } | EquineLegFoal { hind, left } => {
             let s = c.mob.stand_anim;
             let walk = 1.0 - s;
