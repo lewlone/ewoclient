@@ -11,6 +11,7 @@
 pub mod abilities;
 pub mod ambient;
 pub mod animate_tick;
+pub mod attack_strength;
 pub mod attributes;
 pub mod biome;
 pub mod biome_noise;

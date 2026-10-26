@@ -2314,3 +2314,25 @@ impl HudLayers {
         }
     }
 }
+
+/// `Hud.extractCrosshair`'s `crosshairPickEntity instanceof LivingEntity &&
+/// isAlive()`: the entity under the crosshair is a living one with health left
+/// (`LivingEntity.isAlive` is `!isRemoved() && getHealth() > 0`; an entity in
+/// the table is not removed).
+pub(crate) fn crosshair_target_alive(
+    session: &PlaySession,
+    etypes: &EntityTypes,
+    alpha: f32,
+) -> bool {
+    let Some(id) = super::entities::frame_crosshair_pick(session, etypes, alpha) else {
+        return false;
+    };
+    let Some(e) = session.world.entities.get(id) else {
+        return false;
+    };
+    session
+        .entity_classes
+        .as_deref()
+        .is_some_and(|c| c.is_living(e.type_id))
+        && session.world.entities.death_state(id).health > 0.0
+}

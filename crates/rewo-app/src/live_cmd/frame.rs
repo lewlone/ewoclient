@@ -3311,6 +3311,26 @@ impl LiveApp {
                 ),
             );
         }
+        // `extractCrosshair`'s attack indicator, under the F1 gate with the
+        // rest of the survival list.
+        if layers.hotbar_and_decorations
+            && self.options.attack_indicator == rewo_net::options::AttackIndicator::Crosshair
+        {
+            let scale = session.attack_strength_scale(0.0);
+            let delay = session.attack_strength_delay();
+            // Only a full charge on a slow weapon asks what the crosshair is
+            // on, and that is a pick: skip it when the answer cannot matter.
+            let target_alive =
+                scale >= 1.0 && delay > 5.0 && crosshair_target_alive(session, &self.etypes, alpha);
+            let px = rewo_gpu::hud::gui_scale(extent.width as f32, extent.height as f32);
+            survival.extend(rewo_gpu::hud::attack_indicator(
+                scale,
+                delay,
+                target_alive,
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            ));
+        }
         // M188 — `Hud.playAirBubblePoppedSound`, from the same inputs the
         // bars were laid out from: `LocalPlayer.playSound` is
         // `level.playLocalSound(getX(), getY(), getZ(), sound, PLAYERS, ...)`.
