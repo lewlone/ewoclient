@@ -168,8 +168,13 @@ pub(super) fn preview_draw<'a>(
     w: f32,
     h: f32,
     mouse: (f64, f64),
+    // `RecipeBookComponent.isVisible()`: an open book moves `leftPos`, and
+    // `extractEntityInInventoryFollowsMouse` takes `xo + 26` from it.
+    book_open: bool,
 ) -> (EntityDraw<'a>, [[f32; 4]; 4], ash::vk::Rect2D) {
-    let (x_angle, y_angle) = rewo_gpu::container::preview_angles(mouse, w, h);
+    let origin = rewo_gpu::container::preview_origin(w, h, book_open);
+    let win = &rewo_gpu::container::INVENTORY_PREVIEW;
+    let (x_angle, y_angle) = rewo_gpu::container::preview_angles_at(win, mouse, origin);
     // `LivingEntityRenderState.boundingBoxHeight / scale`, and the player's
     // scale is 1 — so this is the standing hitbox, which is what centres the
     // model in its window.
@@ -247,8 +252,8 @@ pub(super) fn preview_draw<'a>(
         fish_dye: None,
         cape: preview_cape(cape_origin),
     };
-    let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
-    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
+    let vp = rewo_gpu::container::preview_view_proj_at(win, origin, w, h, PLAYER_HEIGHT, y_angle);
+    let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect_at(win, origin);
     let rect = ash::vk::Rect2D {
         offset: ash::vk::Offset2D {
             x: rx as i32,

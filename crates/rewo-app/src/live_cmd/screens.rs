@@ -995,7 +995,17 @@ pub(super) fn apply_screen(
             }
             None => (None, false, None),
         };
-        let (draw, vp, rect) = preview_draw(session, skin_uv, slim, cape_origin, held, w, h, mouse);
+        let (draw, vp, rect) = preview_draw(
+            session,
+            skin_uv,
+            slim,
+            cape_origin,
+            held,
+            w,
+            h,
+            mouse,
+            book_open,
+        );
         if let Err(e) =
             wr.prepare_held_items(gpu, &held.iter().flatten().copied().collect::<Vec<_>>())
         {
