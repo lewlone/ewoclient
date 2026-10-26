@@ -2193,6 +2193,27 @@ impl LiveApp {
             rc.crowd_same_kind_max = rc.crowd_same_kind_max.max(same);
             rc.crowd_kinds_max = rc.crowd_kinds_max.max(kinds.len());
         }
+        // `EntityRenderer.extractShadow` for this frame's entities, staged for
+        // the entity pass to build into its shadow range. The `entityShadows`
+        // option gates it (default on).
+        let shadows = if self.options.entity_shadows {
+            let sky_darken = dimension_timeline(
+                session.day_ticks,
+                &dimension_light(session.active_dimension_type.as_ref()),
+            )
+            .sky_darken();
+            collect_entity_shadows(
+                session,
+                &self.etypes,
+                &self.blocks,
+                alpha,
+                cam.eye,
+                sky_darken,
+            )
+        } else {
+            Vec::new()
+        };
+        state.world_renderer.set_entity_shadows(shadows);
         state.world_renderer.set_entities_and_block_entities(
             &draws,
             &be_draws,

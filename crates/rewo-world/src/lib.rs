@@ -49,6 +49,7 @@ pub mod pickup;
 pub mod raycast;
 pub mod riding;
 pub mod rotation;
+pub mod shadow;
 pub mod stacked_contents;
 pub mod stats;
 pub mod step_sound;

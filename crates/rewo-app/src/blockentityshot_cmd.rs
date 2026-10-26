@@ -3292,7 +3292,8 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
     let mut wall = None;
     for id in 0..40000u32 {
         let Some(st) = signs.get(id) else { continue };
-        if st.angle != 0.0 {
+        // A hanging sign has its own transform (checked in t2 below).
+        if st.angle != 0.0 || st.hanging {
             continue;
         }
         match st.attachment {
@@ -3326,12 +3327,38 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
     let same = |a: &rewo_data::be_transform::Affine, b: &rewo_data::be_transform::Affine| {
         (0..3).all(|r| (0..4).all(|k| (a[r][k] - b[r][k]).abs() < 1e-6))
     };
+    // `HangingSignRenderer.textTransformation`, transcribed again:
+    //   M = T(.5,.9375,.5) · YP(-angle) · T(0,-.3125,0) [· YP(180)]
+    //       · T(0,-.32,.073) · S(s, -s, s),  s = 0.0140625
+    let want_hanging = |front: bool, angle: f32| {
+        use rewo_data::be_transform::{mul, rot_y, scale, translation};
+        let mut m = mul(&translation(0.5, 0.9375, 0.5), &rot_y(-angle));
+        m = mul(&m, &translation(0.0, -0.3125, 0.0));
+        if !front {
+            m = mul(&m, &rot_y(180.0));
+        }
+        m = mul(&m, &translation(0.0, -0.32, 0.073));
+        mul(&m, &scale(0.0140625, -0.0140625, 0.0140625))
+    };
+    let hanging_states: Vec<_> = (0..40000u32)
+        .filter_map(|id| signs.get(id))
+        .filter(|s| s.hanging)
+        .collect();
+    let hanging_exact = !hanging_states.is_empty()
+        && hanging_states.iter().all(|h| {
+            same(&h.text_transform(true), &want_hanging(true, h.angle))
+                && same(&h.text_transform(false), &want_hanging(false, h.angle))
+        });
     c.record(
         "t2.the_text_transform_is_exact",
         same(&g.text_transform(true), &want(false, true, 0.0))
             && same(&g.text_transform(false), &want(false, false, 0.0))
-            && same(&w.text_transform(true), &want(true, true, 0.0)),
-        "ground front/back and wall front all match the independent chain",
+            && same(&w.text_transform(true), &want(true, true, 0.0))
+            && hanging_exact,
+        format!(
+            "ground front/back and wall front all match the independent chain, and so do              both faces of all {} hanging and wall-hanging states against theirs",
+            hanging_states.len()
+        ),
     );
 
     // The y scale must be negative — font space is y-down.
@@ -3421,8 +3448,9 @@ fn check_sign_text(c: &mut Checker, version: &str) -> Result<(), String> {
         for id in 0..40000u32 {
             let Some(st) = signs.get(id) else { continue };
             // Wall signs carry an extra offset, so they are a different family
-            // and are covered by t8 rather than compared against ground ones.
-            if st.attachment != SignAttachment::Ground {
+            // and are covered by t8 rather than compared against ground ones;
+            // a hanging sign has its own anchor, scale and width (t2).
+            if st.attachment != SignAttachment::Ground || st.hanging {
                 continue;
             }
             if ci == 0 {

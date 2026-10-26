@@ -4977,3 +4977,195 @@ fn a_loom_pattern_button_tooltips_the_pattern_in_the_dyes_colour() {
     let (px, py) = rewo_ui::menu_screen::loom_cell_origin(0, 3);
     assert!(tip(&view(true, -1), (px as f64 + 3.0, py as f64 + 3.0)).is_none());
 }
+// -- entity shadows -------------------------------------------------------
+
+/// The real collision and outline tables decide which blocks carry a shadow:
+/// the cubes (including grass, whose model is not a cube) do, and the blocks
+/// vanilla's `isCollisionShapeFullBlock` rejects (a slab, a path, farmland,
+/// soul sand, a snow layer, a stair, a chest, a fence) and air do not. The
+/// sheet itself is a 64 x 64 radial shadow with a clear border.
+#[test]
+fn the_real_tables_pick_the_blocks_that_carry_a_shadow() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no config dir");
+        return;
+    };
+    let Some(jar) = super::client_jar_path("26.2") else {
+        rewo_data::skip_test!("no local 26.2 client jar");
+        return;
+    };
+    if !paths.blocks_json().is_file() {
+        rewo_data::skip_test!("no datagen report");
+        return;
+    }
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json()).expect("bake");
+    let blocks = rewo_data::blocks::Blocks::load(&paths.blocks_json()).unwrap();
+    let shape = |name: &str| {
+        let s = blocks.default_state(name).expect(name) as usize;
+        rewo_world::shadow::ground_shape(&baked.collide[s], &baked.outline[s])
+    };
+    for full in [
+        "minecraft:stone",
+        "minecraft:dirt",
+        "minecraft:grass_block",
+        "minecraft:oak_planks",
+        "minecraft:sand",
+        "minecraft:glass",
+    ] {
+        assert_eq!(shape(full), Some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), "{full}");
+    }
+    for partial in [
+        "minecraft:air",
+        "minecraft:oak_slab",
+        "minecraft:oak_stairs",
+        "minecraft:dirt_path",
+        "minecraft:farmland",
+        "minecraft:soul_sand",
+        "minecraft:snow",
+        "minecraft:chest",
+        "minecraft:oak_fence",
+        "minecraft:water",
+    ] {
+        assert_eq!(shape(partial), None, "{partial}");
+    }
+    let sheet = baked.shadow.as_ref().expect("misc/shadow.png");
+    assert_eq!((sheet.w, sheet.h), (64, 64));
+    let alpha = |x: usize, y: usize| sheet.rgba[(y * 64 + x) * 4 + 3];
+    assert_eq!(alpha(32, 32), 255, "the centre is opaque");
+    assert!(
+        (0..64).all(|i| [alpha(i, 0), alpha(i, 63), alpha(0, i), alpha(63, i)] == [0; 4]),
+        "the border is clear, so a clamped read outside the sheet draws nothing"
+    );
+    assert_eq!(&sheet.rgba[(32 * 64 + 32) * 4..][..3], &[0, 0, 0], "black");
+}
+
+// -- the villager profession layer ---------------------------------------
+
+fn villager_ids() -> rewo_data::villager::VillagerRegistries {
+    // The 26.2 report's order, spelled out so a test of the plan does not
+    // need the report (the report is graded against the tables in rewo-data).
+    rewo_data::villager::VillagerRegistries::from_pairs(
+        &[
+            (0, "minecraft:desert"),
+            (1, "minecraft:jungle"),
+            (2, "minecraft:plains"),
+            (3, "minecraft:savanna"),
+            (4, "minecraft:snow"),
+            (5, "minecraft:swamp"),
+            (6, "minecraft:taiga"),
+        ],
+        &[(0, "minecraft:none"), (5, "minecraft:farmer")],
+    )
+}
+
+/// The playtest villager (plains, farmer, level 1) wears the biome sheet on
+/// the headless model, then the farmer and the stone badge on the full one.
+#[test]
+fn a_farmer_wears_its_three_layers() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let l = super::entities::villager_layers(Some(&regs), Some((2, 5, 1)), K::Villager, false)
+        .expect("layers");
+    assert_eq!(
+        l.passes(),
+        [
+            Some(("villager/type/plains", false)),
+            Some(("villager/profession/farmer", true)),
+            Some(("villager/profession_level/stone", true)),
+        ]
+    );
+}
+
+/// A villager the server sent nothing for is the default (plains, none,
+/// level 1): the biome sheet and nothing else. A zombie villager never told
+/// draws nothing, an unknown id draws nothing, and an invisible entity and a
+/// kind without the layer draw nothing.
+#[test]
+fn an_unsent_villager_is_the_default_one() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let l = super::entities::villager_layers(Some(&regs), None, K::Villager, false).unwrap();
+    assert_eq!(l.passes()[0], Some(("villager/type/plains", true)));
+    assert_eq!(l.passes()[1..], [None, None]);
+    // Without the registries the default still draws; sent data cannot.
+    assert!(super::entities::villager_layers(None, None, K::Villager, false).is_some());
+    assert!(super::entities::villager_layers(None, Some((2, 5, 1)), K::Villager, false).is_none());
+    assert!(
+        super::entities::villager_layers(Some(&regs), None, K::ZombieVillager, false).is_none()
+    );
+    assert!(
+        super::entities::villager_layers(Some(&regs), Some((9, 5, 1)), K::Villager, false)
+            .is_none()
+    );
+    assert!(
+        super::entities::villager_layers(Some(&regs), Some((2, 5, 1)), K::Villager, true).is_none()
+    );
+    assert!(super::entities::villager_layers(Some(&regs), None, K::Cow, false).is_none());
+}
+
+/// Babies and zombie villagers pick their own families: the baby wears
+/// `baby/<type>` and no profession even when it has one, the zombie villager
+/// its own folders.
+#[test]
+fn babies_and_zombies_pick_their_own_sheets() {
+    use rewo_gpu::mobs::EntityModelKind as K;
+    let regs = villager_ids();
+    let baby =
+        super::entities::villager_layers(Some(&regs), Some((6, 5, 3)), K::VillagerBaby, false)
+            .unwrap();
+    assert_eq!(baby.passes()[0].map(|p| p.0), Some("villager/baby/taiga"));
+    assert_eq!(baby.passes()[1..], [None, None]);
+    let zombie =
+        super::entities::villager_layers(Some(&regs), Some((3, 5, 5)), K::ZombieVillager, false)
+            .unwrap();
+    assert_eq!(
+        zombie.passes().map(|p| p.map(|p| p.0)),
+        [
+            Some("zombie_villager/type/savanna"),
+            Some("zombie_villager/profession/farmer"),
+            Some("zombie_villager/profession_level/diamond"),
+        ]
+    );
+    let zbaby = super::entities::villager_layers(
+        Some(&regs),
+        Some((0, 0, 1)),
+        K::ZombieVillagerBaby,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        zbaby.passes()[0].map(|p| p.0),
+        Some("zombie_villager/baby/desert")
+    );
+}
+
+/// The atlas has room for every sheet, the villager layers' included: the
+/// real bake, packed by the entity pass's own packer. A sheet that finds no
+/// shelf is logged and skipped at run time, which no draw-list gate sees.
+#[test]
+fn every_sheet_finds_room_in_the_entity_atlas() {
+    let Some(paths) = rewo_data::DataPaths::for_version("26.2") else {
+        rewo_data::skip_test!("no config dir");
+        return;
+    };
+    let Some(jar) = super::client_jar_path("26.2") else {
+        rewo_data::skip_test!("no local 26.2 client jar");
+        return;
+    };
+    if !paths.blocks_json().is_file() {
+        rewo_data::skip_test!("no datagen report");
+        return;
+    }
+    let baked = rewo_data::assets::bake(&jar, &paths.blocks_json()).expect("bake");
+    assert_eq!(
+        baked.villager_textures.len(),
+        rewo_data::villager::SHEETS.len(),
+        "every sheet is in the jar"
+    );
+    let tex = super::entity_textures(&baked);
+    assert_eq!(tex.layers.len(), baked.villager_textures.len());
+    assert_eq!(
+        rewo_gpu::entities::unpacked_textures(&tex),
+        Vec::<String>::new()
+    );
+}

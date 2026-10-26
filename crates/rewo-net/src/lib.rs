@@ -3152,6 +3152,11 @@ pub(crate) fn apply_set_entity_data<'a>(
     if let (Some(s), true) = (meta.opt_block16, vk.enderman == Some(type_id)) {
         entities.set_carried_block(eid, u32::try_from(s).ok().filter(|s| *s != 0));
     }
+    // `VillagerData` (serializer 18, the villager's and the zombie villager's
+    // alone) → `VillagerProfessionLayer`'s outfit.
+    if let Some(data) = meta.villager_data {
+        entities.set_villager_data(eid, data);
+    }
     // M362 — Slot 10 BOOLEAN → `AbstractArrow.IN_GROUND`; the table only
     // lets it reach an entity flying an arrow's flight.
     if let Some(b) = meta.bool10 {
@@ -5726,6 +5731,24 @@ mod set_entity_data_tests {
         apply_set_entity_data(&body(52, 19, 1, &[40]), &mut t, kinds);
         assert_eq!(t.mob_state(51).sulfur_fuse, Some(40));
         assert_eq!(t.mob_state(52).sulfur_fuse, None);
+    }
+
+    /// A villager's `VillagerData` (serializer 18) lands in the entity's own
+    /// row at either class's slot (19 for the villager, 20 for the zombie
+    /// villager), and an untracked id is dropped like any other metadata.
+    #[test]
+    fn a_villagers_data_is_stored_for_the_entity_it_names() {
+        const VILLAGER: i32 = 801;
+        let mut t = EntityTable::default();
+        t.add(61, EntityState::new(0, VILLAGER, 0.0, 0.0, 0.0, 0.0, 0.0));
+        t.add(62, EntityState::new(0, ZOMBIE, 0.0, 0.0, 0.0, 0.0, 0.0));
+        let kinds = crate::MetaKinds::default();
+        apply_set_entity_data(&body(61, 19, 18, &[2, 5, 3]), &mut t, kinds);
+        apply_set_entity_data(&body(62, 20, 18, &[4, 9, 5]), &mut t, kinds);
+        apply_set_entity_data(&body(63, 19, 18, &[1, 1, 1]), &mut t, kinds);
+        assert_eq!(t.villager_data(61), Some((2, 5, 3)));
+        assert_eq!(t.villager_data(62), Some((4, 9, 5)));
+        assert_eq!(t.villager_data(63), None);
     }
 
     /// M393 — a boat's 8 INT / 9 INT / 10 FLOAT are its hurt, hurt
