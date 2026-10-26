@@ -187,6 +187,11 @@ pub struct BiomeDef {
     /// dimension base.
     pub sky_color: Option<i32>,
     pub fog_color: Option<i32>,
+    /// M422 — `visual/water_fog_color` (the ocean variants, the swamps, the
+    /// lush caves...), `None` = the default (`fog_env::DEFAULT_WATER_FOG_COLOR`).
+    pub water_fog_color: Option<i32>,
+    /// M422 — `visual/water_fog_end_distance` (the swamps' `multiply 0.85`).
+    pub water_fog_end: Option<crate::fog_env::FloatModifier>,
     /// `has_precipitation` — whether weather falls here at all. M33 reads it;
     /// with `temperature` + `temperature_modifier` it decides rain vs snow vs
     /// nothing (see [`crate::weather`]).
@@ -475,6 +480,53 @@ impl BiomeContext {
         self.camera_attr(eye, base, sample_quart, |b| b.fog_color)
     }
 
+    /// M422 — camera `visual/water_fog_color`, over its attribute default
+    /// (no vanilla dimension sets one).
+    pub fn camera_water_fog_color(
+        &self,
+        eye: [f64; 3],
+        sample_quart: &impl Fn(i32, i32, i32) -> u16,
+    ) -> i32 {
+        self.camera_attr(
+            eye,
+            crate::fog_env::DEFAULT_WATER_FOG_COLOR,
+            sample_quart,
+            |b| b.water_fog_color,
+        )
+    }
+
+    /// M422 — camera `visual/water_fog_end_distance`: each biome's modifier
+    /// over the default, blended by the same Gaussian weights as the colours
+    /// with `Mth.lerp` (a float attribute's interpolation).
+    pub fn camera_water_fog_end(
+        &self,
+        eye: [f64; 3],
+        sample_quart: &impl Fn(i32, i32, i32) -> u16,
+    ) -> f32 {
+        let base = crate::fog_env::WATER_FOG_END;
+        let groups =
+            gaussian_biome_weights([eye[0] * 0.25, eye[1] * 0.25, eye[2] * 0.25], |x, y, z| {
+                sample_quart(x, y, z)
+            });
+        let value = |biome_id: u16| -> f32 {
+            self.registry
+                .get(biome_id as usize)
+                .and_then(|b| b.water_fog_end)
+                .map_or(base, |m| m.apply(base))
+        };
+        let mut result: Option<f32> = None;
+        let mut accum = 0.0f64;
+        for (biome_id, weight) in &groups {
+            let v = value(*biome_id);
+            accum += weight;
+            result = Some(match result {
+                None => v,
+                Some(prev) => prev + (weight / accum) as f32 * (v - prev),
+            });
+        }
+        result.unwrap_or(base)
+    }
+
     fn camera_attr(
         &self,
         eye: [f64; 3],
@@ -638,6 +690,8 @@ mod tests {
             grass_modifier: GrassModifier::None,
             sky_color: Some(argb_opaque(0x78A7FF)),
             fog_color: None,
+            water_fog_color: None,
+            water_fog_end: None,
             has_precipitation: true,
             temperature_modifier: crate::weather::TemperatureModifier::None,
             ambient_sounds: None,

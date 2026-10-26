@@ -213,6 +213,25 @@ impl WorldRenderer {
         self.scene.dark_disc = dark_disc;
     }
 
+    /// M422 — this frame's sky and fog colour inputs as last set: the sky
+    /// base, the fog base (both linear) and their two day/night tints. The
+    /// fog environments read the fog colour the GPU would draw
+    /// (`fog_base · fog_tint`) and override it.
+    pub fn sky_fog_inputs(&self) -> ([f32; 3], [f32; 3], [f32; 3], [f32; 3]) {
+        (
+            self.scene.sky_base,
+            self.scene.fog_base,
+            self.scene.sky_tint,
+            self.scene.fog_tint,
+        )
+    }
+
+    /// M422 — the sky disc's `FogSkyEnd` alone (a fog environment's
+    /// `skyEnd`), keeping the dark disc as set.
+    pub fn set_sky_end(&mut self, sky_end: f32) {
+        self.scene.sky_end = sky_end;
+    }
+
     /// Select the dimension's skybox (`DimensionType.Skybox` →
     /// `LevelRenderer.addSkyPass`). The live paths set this every frame from
     /// `PlaySession::active_dimension_type`, so a dimension change or respawn

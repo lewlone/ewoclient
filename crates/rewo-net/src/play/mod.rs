@@ -1372,6 +1372,9 @@ pub struct PlaySession {
     /// lightmap (M13). Fed by `update_mob_effect` / `remove_mob_effect` and one
     /// `tick()` per client tick.
     visual_effects: crate::effects::VisualEffects,
+    /// M422 — `LocalPlayer.waterVisionTime`, ticked in the local player's
+    /// `aiStep`; the water fog's end and colour read it.
+    water_vision: rewo_world::fog_env::WaterVision,
     /// M14 biome tint. The parsed registry (raw order) waits here until the
     /// play-login packet supplies the `biomeZoomSeed` + dimension holder; the
     /// full `BiomeContext` is then built and attached to `world`.
@@ -2207,6 +2210,7 @@ impl<'a> Connection<'a> {
             player_skins: crate::skins::SkinTable::default(),
             pending_skins: Vec::new(),
             visual_effects,
+            water_vision: Default::default(),
             pending_biome_registry,
             colormaps,
             biome_global_bits,
@@ -3126,6 +3130,19 @@ impl PlaySession {
                 .after_travel(&mut self.abilities, &self.player, spectator);
             self.collide = collide;
             self.block_physics = block_physics;
+            // M422 — `LocalPlayer.aiStep`'s water vision, on this tick's
+            // `isEyeInFluid(WATER)` (`updateFluidOnEyes`).
+            let eyes_in_water = rewo_world::fog_env::water_on_eyes(
+                &rewo_world::physics::WorldPhysics {
+                    world: &self.world,
+                    collide: &self.collide,
+                    blocks: &self.block_physics,
+                },
+                self.player.x,
+                self.player.eye_y(),
+                self.player.z,
+            );
+            self.water_vision.tick(eyes_in_water, spectator);
             if owes_packet {
                 self.send_abilities()?;
             }
@@ -3232,6 +3249,29 @@ impl PlaySession {
     /// this plus the day/night `SkyLighting`.
     pub fn visual_effects(&self) -> &crate::effects::VisualEffects {
         &self.visual_effects
+    }
+
+    /// M422 — `getWaterVision()`.
+    pub fn water_vision(&self) -> f32 {
+        self.water_vision.value()
+    }
+
+    /// M422 — the local player's effects as the fog environments read them:
+    /// blindness's duration, darkness's blend factor (only while it is
+    /// present), fire resistance.
+    pub fn fog_effects(&self, partial: f32) -> rewo_world::fog_env::FogInputs {
+        let ids = &self.movement_effect_ids;
+        let get = |id: Option<i32>| id.and_then(|i| self.visual_effects.get(i));
+        rewo_world::fog_env::FogInputs {
+            blindness: get(ids.blindness).map(|e| rewo_world::fog_env::EffectState {
+                infinite: e.is_infinite(),
+                duration: e.duration,
+            }),
+            darkness: get(self.visual_effects.effect_ids().1)
+                .map(|_| self.visual_effects.darkness_blend_factor(partial)),
+            fire_resistance: get(ids.fire_resistance).is_some(),
+            ..Default::default()
+        }
     }
 
     /// A read-only snapshot of the camera lightmap effects at `partial`.
@@ -3522,6 +3562,8 @@ impl PlaySession {
         self.mounts.clear();
         self.vehicle_pose = None;
         self.visual_effects.reset_for_respawn();
+        // M422 — a respawn is a new `LocalPlayer`.
+        self.water_vision = Default::default();
         self.spawned = false;
         self.active_dimension_key = None;
         self.active_dimension_holder = None;
@@ -4927,6 +4969,8 @@ impl PlaySession {
         // server re-sends whatever effects still apply. The registry ids and the
         // (unchanged) local entity id are kept.
         self.visual_effects.reset_for_respawn();
+        // M422 — a respawn is a new `LocalPlayer`.
+        self.water_vision = Default::default();
 
         // M79, and it runs the opposite way to the fields above it. The
         // experience triple and the item-cooldown map are `LocalPlayer` /

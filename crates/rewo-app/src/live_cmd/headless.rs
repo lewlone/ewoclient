@@ -602,6 +602,14 @@ pub(super) fn run_headless(
     );
     apply_border(&mut world_renderer, &mut gpu, &session, 1.0);
     apply_render_distance_fog(&mut world_renderer, &session);
+    // M422 — the fog environment, as the live frame applies it.
+    apply_fog_environment(
+        &mut world_renderer,
+        &session,
+        1.0,
+        crate::modules::VANILLA_FOV,
+        off.extent.width.max(1) as f64 / off.extent.height.max(1) as f64,
+    );
     // M35: `REWO_OPEN_INVENTORY=1` opens the screen for the headless shot, so
     // a PNG can show it without a windowed session and a keypress. The cursor
     // is parked at the window centre, which is where `set_screen_open` puts it.

@@ -419,6 +419,8 @@ mod tests {
             haste: None,
             conduit_power: None,
             mining_fatigue: None,
+            blindness: None,
+            fire_resistance: None,
         };
         let mut attrs = rewo_world::physics::MoveAttributes::default();
         apply_movement_effects(&mut attrs, &ids, |_| None);
@@ -435,6 +437,8 @@ mod tests {
             haste: None,
             conduit_power: None,
             mining_fatigue: None,
+            blindness: None,
+            fire_resistance: None,
         };
         let mut attrs = rewo_world::physics::MoveAttributes::default();
         apply_movement_effects(&mut attrs, &ids, |id| match id {

@@ -33,6 +33,10 @@ pub struct MovementEffectIds {
     pub haste: Option<i32>,
     pub conduit_power: Option<i32>,
     pub mining_fatigue: Option<i32>,
+    /// M422 — the two effects the fog environments read
+    /// (`BlindnessFogEnvironment`, `LavaFogEnvironment`'s fire resistance).
+    pub blindness: Option<i32>,
+    pub fire_resistance: Option<i32>,
 }
 
 /// What one configuration pass synced — the registries and tags a play
@@ -100,6 +104,8 @@ impl ConfigData {
                 slow_falling: data.mob_effects.id_of("minecraft:slow_falling"),
                 dolphins_grace: data.mob_effects.id_of("minecraft:dolphins_grace"),
                 levitation: data.mob_effects.id_of("minecraft:levitation"),
+                blindness: data.mob_effects.id_of("minecraft:blindness"),
+                fire_resistance: data.mob_effects.id_of("minecraft:fire_resistance"),
             },
             biome_defs: Vec::new(),
             enchantments: Vec::new(),
@@ -357,6 +363,11 @@ impl ConfigData {
                     }
                     "minecraft:levitation" => {
                         self.movement_effect_ids.levitation = Some(idx as i32)
+                    }
+                    // M422 — the fog environments.
+                    "minecraft:blindness" => self.movement_effect_ids.blindness = Some(idx as i32),
+                    "minecraft:fire_resistance" => {
+                        self.movement_effect_ids.fire_resistance = Some(idx as i32)
                     }
                     _ => {}
                 }

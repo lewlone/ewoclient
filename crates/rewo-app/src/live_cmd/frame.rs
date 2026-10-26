@@ -3387,6 +3387,18 @@ impl LiveApp {
             );
             apply_border(&mut state.world_renderer, &mut state.gpu, session, alpha);
             apply_render_distance_fog(&mut state.world_renderer, session);
+            // M422 — under water, in lava or powder snow, blinded: the fog
+            // environment over the atmospheric fog.
+            {
+                let extent = state.renderer.swapchain.extent;
+                apply_fog_environment(
+                    &mut state.world_renderer,
+                    session,
+                    alpha,
+                    self.modules.render().fov_degrees,
+                    extent.width.max(1) as f64 / extent.height.max(1) as f64,
+                );
+            }
             if self.particles.is_none() {
                 self.particles = ParticleAssets::new(baked);
             }

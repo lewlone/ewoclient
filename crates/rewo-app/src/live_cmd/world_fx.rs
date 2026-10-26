@@ -139,6 +139,97 @@ pub(super) fn apply_render_distance_fog(wr: &mut WorldRenderer, session: &PlaySe
     wr.set_fog(start, end);
 }
 
+/// M422 — `FogRenderer`'s environments over the atmospheric fog the frame
+/// already set (the rain band, the biome colour, the sky disc's end): under
+/// water, in lava or powder snow, or blinded or in darkness, this frame's
+/// environmental band, sky end and fog colour are that environment's
+/// ([`rewo_world::fog_env`]). With none applicable and nothing to darken or
+/// brighten, nothing is touched. Runs after [`apply_render_distance_fog`]
+/// (which set the sky end) and after the lightmap and biome colour.
+pub(super) fn apply_fog_environment(
+    wr: &mut WorldRenderer,
+    session: &PlaySession,
+    partial: f32,
+    fov_option: f32,
+    aspect: f64,
+) {
+    use rewo_world::fog_env as fe;
+    let eye = eye_f64(session);
+    let forward = look_dir(session.player.yaw, session.player.pitch);
+    // `Camera.left` and `up`: only their directions matter, the near-plane
+    // probes are symmetric in both.
+    let left = {
+        let l = [forward[2], 0.0, -forward[0]];
+        let n = (l[0] * l[0] + l[2] * l[2]).sqrt().max(1e-9);
+        [l[0] / n, 0.0, l[2] / n]
+    };
+    let up = [
+        forward[1] * left[2] - forward[2] * left[1],
+        forward[2] * left[0] - forward[0] * left[2],
+        forward[0] * left[1] - forward[1] * left[0],
+    ];
+    let physics = rewo_world::physics::WorldPhysics {
+        world: &session.world,
+        collide: &session.collide,
+        blocks: &session.block_physics,
+    };
+    let fog_type = fe::camera_fog_type(&physics, eye, forward, left, up, fov_option, aspect);
+    let water_end = session
+        .world
+        .camera_water_fog_end(eye)
+        .unwrap_or(fe::WATER_FOG_END);
+    let inputs = fe::FogInputs {
+        fog_type: Some(fog_type),
+        spectator: session
+            .game_state
+            .game_mode()
+            .is_some_and(|m| m.is_spectator()),
+        water_vision: session.water_vision(),
+        water_fog: [fe::WATER_FOG_START, water_end],
+        render_distance: (session.effective_render_distance() * 16) as f32,
+        ..session.fog_effects(partial)
+    };
+    let (sky_base, fog_base, sky_tint, fog_tint) = wr.sky_fog_inputs();
+    let night_vision = session
+        .visual_effects()
+        .night_vision_duration()
+        .map_or(0.0, |d| {
+            rewo_world::lightmap::night_vision_intensity(d, partial)
+        });
+    let plan = fe::plan(
+        &inputs,
+        night_vision,
+        session
+            .world
+            .camera_water_fog_color(eye)
+            .unwrap_or(fe::DEFAULT_WATER_FOG_COLOR),
+        // The atmospheric colour the frame drew, as the `ARGB` floats (sRGB)
+        // `computeFogColor` works in.
+        std::array::from_fn(|i| linear_to_srgb(fog_base[i] * fog_tint[i])),
+    );
+    if let Some(env) = plan.band {
+        wr.set_env_fog([env.start, env.end]);
+        wr.set_sky_end(env.sky_end);
+    }
+    if let Some(rgb) = plan.color {
+        // Back to the linear base the GPU multiplies by its tint, with the
+        // tint spent: the environment's colour has no day/night track.
+        wr.set_sky_fog_base(sky_base, rgb.map(srgb_to_linear));
+        wr.set_sky_tint(sky_tint, [1.0; 3]);
+    }
+}
+
+/// The sRGB encode, the inverse of `srgb_to_linear` (M422's colour round
+/// trip).
+fn linear_to_srgb(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// `EnvironmentAttributes.SKY_FOG_END_DISTANCE`'s default. Neither built-in
 /// dimension overrides it (the same caveat as [`ENV_FOG_END`]).
 const SKY_FOG_END_DISTANCE: f32 = 512.0;

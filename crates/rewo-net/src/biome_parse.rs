@@ -153,6 +153,15 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
         .unwrap_or(GrassModifier::None);
 
     let (sky_color, fog_color) = attribute_sky_fog(nbt.get("attributes"));
+    // M422 — the water fog's colour and end distance.
+    let water_fog_color = nbt
+        .get("attributes")
+        .and_then(|a| a.get("minecraft:visual/water_fog_color"))
+        .and_then(parse_attr_color);
+    let water_fog_end = attribute_float_modifier(
+        nbt.get("attributes"),
+        "minecraft:visual/water_fog_end_distance",
+    );
     let ambient_sounds = attribute_ambient_sounds(nbt.get("attributes"));
     let background_music = attribute_background_music(nbt.get("attributes"));
     let music_volume = attribute_music_volume(nbt.get("attributes"));
@@ -168,12 +177,44 @@ pub fn parse_biome(name: &str, nbt: &Nbt) -> BiomeDef {
         grass_modifier,
         sky_color,
         fog_color,
+        water_fog_color,
+        water_fog_end,
         has_precipitation,
         temperature_modifier,
         ambient_sounds,
         background_music,
         music_volume,
     }
+}
+
+/// M422 — a float environment attribute as a biome writes it: a bare number
+/// (an override) or `{argument, modifier}` (`AttributeModifier`'s float
+/// operations). Anything else reads as unset.
+pub fn attribute_float_modifier(
+    attributes: Option<&Nbt>,
+    key: &str,
+) -> Option<rewo_world::fog_env::FloatModifier> {
+    use rewo_world::fog_env::FloatModifier as M;
+    let num = |n: &Nbt| match n {
+        Nbt::Float(f) => Some(*f),
+        Nbt::Double(d) => Some(*d as f32),
+        Nbt::Int(i) => Some(*i as f32),
+        _ => None,
+    };
+    let v = attributes?.get(key)?;
+    if let Some(f) = num(v) {
+        return Some(M::Override(f));
+    }
+    let arg = num(v.get("argument")?)?;
+    Some(match v.get("modifier")?.as_str()? {
+        "override" => M::Override(arg),
+        "add" => M::Add(arg),
+        "subtract" => M::Subtract(arg),
+        "multiply" => M::Multiply(arg),
+        "minimum" => M::Minimum(arg),
+        "maximum" => M::Maximum(arg),
+        _ => return None,
+    })
 }
 
 /// One `SoundEvent.CODEC` value. That codec is a `Holder<SoundEvent>` codec, so
@@ -449,6 +490,12 @@ mod tests {
             ),
         ]);
         let def = parse_biome("minecraft:swamp", &biome);
+        // M422 — the water fog end's modifier is kept now.
+        assert_eq!(
+            def.water_fog_end,
+            Some(rewo_world::fog_env::FloatModifier::Multiply(0.85))
+        );
+        assert_eq!(def.water_fog_color, None);
         assert_eq!(def.grass_modifier, GrassModifier::Swamp);
         assert_eq!(def.foliage_override, Some(0xFF6A7039u32 as i32));
         assert_eq!(def.dry_foliage_override, Some(0xFF7B5334u32 as i32));

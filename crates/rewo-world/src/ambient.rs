@@ -271,6 +271,8 @@ mod tests {
             grass_modifier: crate::biome::GrassModifier::None,
             sky_color: None,
             fog_color: None,
+            water_fog_color: None,
+            water_fog_end: None,
             has_precipitation: true,
             temperature_modifier: crate::weather::TemperatureModifier::None,
             ambient_sounds: None,

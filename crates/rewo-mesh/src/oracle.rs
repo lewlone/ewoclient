@@ -291,6 +291,8 @@ pub(crate) fn oracle_biome_context() -> rewo_world::biome::BiomeContext {
         grass_modifier: GrassModifier::None,
         sky_color: None,
         fog_color: None,
+        water_fog_color: None,
+        water_fog_end: None,
         has_precipitation: true,
         temperature_modifier: Default::default(),
         ambient_sounds: None,

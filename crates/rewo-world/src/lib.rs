@@ -30,6 +30,7 @@ pub mod dimension;
 pub mod end_flash;
 pub mod entities;
 pub mod entity_pick;
+pub mod fog_env;
 pub mod fov;
 pub mod glide;
 pub mod inventory;
@@ -765,6 +766,19 @@ impl World {
         Some(ctx.camera_fog(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
     }
 
+    /// M422 — camera `visual/water_fog_color` (ARGB), or `None` with no biome
+    /// context.
+    pub fn camera_water_fog_color(&self, eye: [f64; 3]) -> Option<i32> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.camera_water_fog_color(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
+    }
+
+    /// M422 — camera `visual/water_fog_end_distance`, or `None`.
+    pub fn camera_water_fog_end(&self, eye: [f64; 3]) -> Option<f32> {
+        let ctx = self.biome.as_ref()?;
+        Some(ctx.camera_water_fog_end(eye, &|qx, qy, qz| self.noise_biome_at_quart(qx, qy, qz)))
+    }
+
     /// Apply a `chunks_biomes` packet to a loaded column (replace its section
     /// biome palettes). No-op if the column isn't loaded.
     pub fn apply_chunks_biomes(&mut self, cx: i32, cz: i32, biomes: Vec<palette::Container>) {
@@ -989,6 +1003,8 @@ mod ambient_sounds_at_tests {
             grass_modifier: crate::biome::GrassModifier::None,
             sky_color: None,
             fog_color: None,
+            water_fog_color: None,
+            water_fog_end: None,
             has_precipitation: true,
             temperature_modifier: Default::default(),
             ambient_sounds: ambient,

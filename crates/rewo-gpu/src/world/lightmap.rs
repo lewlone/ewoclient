@@ -297,6 +297,12 @@ impl WorldRenderer {
     pub fn set_lightmap_state(&mut self, state: WorldLightmapState) {
         self.scene.lightmap = state;
     }
+
+    /// M422 — the environmental fog band alone (a fog environment's), over
+    /// the lightmap state already set this frame.
+    pub fn set_env_fog(&mut self, band: [f32; 2]) {
+        self.scene.lightmap.env_fog = band;
+    }
 }
 
 #[cfg(test)]

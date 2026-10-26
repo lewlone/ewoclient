@@ -782,6 +782,8 @@ mod extract_tests {
             grass_modifier: crate::biome::GrassModifier::None,
             sky_color: None,
             fog_color: None,
+            water_fog_color: None,
+            water_fog_end: None,
             has_precipitation: climate.has_precipitation,
             temperature_modifier: climate.temperature_modifier,
             ambient_sounds: None,
