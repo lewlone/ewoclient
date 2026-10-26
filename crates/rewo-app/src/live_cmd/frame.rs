@@ -3204,8 +3204,10 @@ impl LiveApp {
             state.world_renderer.set_container(false, None);
         }
         let _ = hovered;
-        // M38: the first-person hand. Suppressed while the inventory screen is
-        // open — the screen owns the view, and vanilla does the same.
+        // M38: the first-person hand. Drawn under an open screen too:
+        // `GameRenderer.render` renders the level and the hand first, then the
+        // HUD, then the screen over them (its backdrop dims what is under it),
+        // and the pass order here is the same — hand, HUD, container panel.
         if let Some(baked) = self.baked.as_ref() {
             #[cfg(feature = "gates")]
             if let Some(c) = self.check.as_mut() {
@@ -3217,7 +3219,7 @@ impl LiveApp {
             // M284 — and while asleep (`renderItemInHand`'s
             // `!isSleeping`): the camera lies in the bed.
             // ...and `renderItemInHand`'s `!isHudHidden`.
-            if self.screen.inventory_open() || session.is_sleeping() || !layers.item_in_hand {
+            if session.is_sleeping() || !layers.item_in_hand {
                 let _ = state
                     .world_renderer
                     .set_hand(&mut state.gpu, &[], [[0.0; 4]; 4]);
@@ -3331,6 +3333,26 @@ impl LiveApp {
                     OFFHAND_LEFT,
                 ),
             );
+        }
+        // `extractCrosshair`'s attack indicator, under the F1 gate with the
+        // rest of the survival list.
+        if layers.hotbar_and_decorations
+            && self.options.attack_indicator == rewo_net::options::AttackIndicator::Crosshair
+        {
+            let scale = session.attack_strength_scale(0.0);
+            let delay = session.attack_strength_delay();
+            // Only a full charge on a slow weapon asks what the crosshair is
+            // on, and that is a pick: skip it when the answer cannot matter.
+            let target_alive =
+                scale >= 1.0 && delay > 5.0 && crosshair_target_alive(session, &self.etypes, alpha);
+            let px = rewo_gpu::hud::gui_scale(extent.width as f32, extent.height as f32);
+            survival.extend(rewo_gpu::hud::attack_indicator(
+                scale,
+                delay,
+                target_alive,
+                (extent.width as f32 / px) as i32,
+                (extent.height as f32 / px) as i32,
+            ));
         }
         // M188 — `Hud.playAirBubblePoppedSound`, from the same inputs the
         // bars were laid out from: `LocalPlayer.playSound` is
@@ -3878,7 +3900,13 @@ impl LiveApp {
         // M66: the held-item name over the hotbar. Needs the font's advances
         // to centre itself, so it is built here rather than in `build_text`.
         if let Some(advance) = state.world_renderer.font_advance() {
-            if layers.hotbar_and_decorations {
+            // Vanilla draws these two in the HUD stratum, UNDER an open screen's
+            // backdrop. Rewo's text pass runs after the screen's chrome, so
+            // they would sit over the panel at full brightness: left out
+            // while a screen is up (drawing them underneath needs a second
+            // text pass before the container pass).
+            let under_screen = self.screen.any_open();
+            if layers.hotbar_and_decorations && !under_screen {
                 text.extend(selected_item_name_line(
                     session,
                     &self.items,
@@ -3891,7 +3919,7 @@ impl LiveApp {
             // M79: the XP level number, then the title / subtitle / action
             // bar. The titles go last so they sit over everything the HUD
             // draws, which is where `nextStratum()` puts them in vanilla.
-            if layers.hotbar_and_decorations {
+            if layers.hotbar_and_decorations && !under_screen {
                 text.extend(experience_level_lines(
                     &session.hud.experience,
                     has_experience(session),

@@ -108,6 +108,8 @@ pub struct HudSpritesData<'a> {
     pub jump_bar: [HudSpriteData<'a>; 3],
     /// `hud/hotbar_offhand_{left,right}`, 29x24 each, in that order.
     pub offhand: [HudSpriteData<'a>; 2],
+    /// `hud/crosshair_attack_indicator_{full,background,progress}`.
+    pub attack_indicator: [HudSpriteData<'a>; 3],
     /// `mob_effect/<name>.png`, one per registry id IN REGISTRY ORDER
     /// (M168) — `HudIcon::Effect(id)` is an index into this.
     pub effect_icons: Vec<HudSpriteData<'a>>,
@@ -202,6 +204,18 @@ pub enum HudIcon {
     Offhand {
         left: bool,
     },
+    /// The crosshair's attack-cooldown indicator. See [`attack_indicator`].
+    AttackIndicator(AttackSprite),
+}
+
+/// Which `hud/crosshair_attack_indicator_*` sprite a [`HudIcon::AttackIndicator`]
+/// names. `Progress` is a sub-rectangle like the jump bar's: the blit's `w` is
+/// the filled width of a 16 px sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackSprite {
+    Full,
+    Background,
+    Progress,
 }
 
 /// This frame's M79 gauges, as the renderer needs them.
@@ -328,6 +342,8 @@ pub struct HudPass {
     jump_bar: [Rect; 3],
     /// The off-hand pocket, left then right.
     offhand: [Rect; 2],
+    /// The attack indicator: full, background, progress.
+    attack_indicator: [Rect; 3],
     effect_icons: Vec<Rect>,
     /// The tab-list face pool (M155), keyed by player UUID and LRU over the
     /// frames whose tab list drew each slot (see
@@ -489,6 +505,21 @@ impl HudPass {
                 *slot = row(&mut atlas, std::slice::from_ref(s), x, OFFHAND_ATLAS_Y)[0];
             }
             out
+        };
+        // The attack indicator's three sprites, right of the pockets on the
+        // same strip: the 16x16 full one at x 60, the two 16x4 strips at x 80.
+        let attack_indicator: [Rect; 3] = {
+            let s = &sprites.attack_indicator;
+            [
+                row(&mut atlas, std::slice::from_ref(&s[0]), 60, OFFHAND_ATLAS_Y)[0],
+                row(&mut atlas, std::slice::from_ref(&s[1]), 80, OFFHAND_ATLAS_Y)[0],
+                row(
+                    &mut atlas,
+                    std::slice::from_ref(&s[2]),
+                    80,
+                    OFFHAND_ATLAS_Y + 6,
+                )[0],
+            ]
         };
         // `GuiGraphicsExtractor.itemCooldown` fills with `Integer.MAX_VALUE`,
         // which as ARGB is a half-transparent white. Nothing in the jar carries
@@ -691,6 +722,7 @@ impl HudPass {
                 effect_background_ambient,
                 jump_bar,
                 offhand,
+                attack_indicator,
                 effect_icons,
             })
         }
@@ -941,6 +973,7 @@ impl HudPass {
             let uw = if matches!(
                 b.icon,
                 HudIcon::JumpBar(crate::survival_hud::JumpBarSprite::Progress)
+                    | HudIcon::AttackIndicator(AttackSprite::Progress)
             ) {
                 b.w / r.w
             } else {
@@ -1144,6 +1177,11 @@ impl HudPass {
                 JumpBarSprite::Progress => self.jump_bar[2],
             },
             HudIcon::Offhand { left } => self.offhand[usize::from(!left)],
+            HudIcon::AttackIndicator(a) => match a {
+                AttackSprite::Full => self.attack_indicator[0],
+                AttackSprite::Background => self.attack_indicator[1],
+                AttackSprite::Progress => self.attack_indicator[2],
+            },
         })
     }
 
@@ -1294,6 +1332,53 @@ pub fn hotbar_slot_rects(bar_w: f32, bar_h: f32, w: f32, h: f32) -> [(f32, f32, 
             16.0 * scale,
         )
     })
+}
+
+/// `Hud.extractCrosshair`'s attack indicator, as the blits it draws. `scale`
+/// is `getAttackStrengthScale(0)`, `delay` is `getCurrentItemAttackStrengthDelay`
+/// and `target_alive` is "the crosshair entity is a living entity that
+/// `isAlive()`".
+///
+/// ```java
+/// if (target != null && target instanceof LivingEntity && scale >= 1.0F) {
+///    full = player.getCurrentItemAttackStrengthDelay() > 5.0F;
+///    full &= target.isAlive();
+/// }
+/// int y = guiHeight / 2 - 7 + 16;   int x = guiWidth / 2 - 8;
+/// if (full)            blitSprite(FULL, x, y, 16, 16);
+/// else if (scale < 1)  { progress = (int)(scale * 17);
+///                        blitSprite(BACKGROUND, x, y, 16, 4);
+///                        blitSprite(PROGRESS, 16, 4, 0, 0, x, y, progress, 4); }
+/// ```
+///
+/// The `ATTACK_RANGE` component test (a spear's reach) is not applied.
+pub fn attack_indicator(
+    scale: f32,
+    delay: f32,
+    target_alive: bool,
+    gui_w: i32,
+    gui_h: i32,
+) -> Vec<HudBlit> {
+    let (x, y) = ((gui_w / 2 - 8) as f32, (gui_h / 2 - 7 + 16) as f32);
+    let blit = |w: f32, h: f32, sprite: AttackSprite| HudBlit {
+        x,
+        y,
+        w,
+        h,
+        alpha: 1.0,
+        icon: HudIcon::AttackIndicator(sprite),
+    };
+    if target_alive && scale >= 1.0 && delay > 5.0 {
+        vec![blit(16.0, 16.0, AttackSprite::Full)]
+    } else if scale < 1.0 {
+        let progress = (scale * 17.0) as i32;
+        vec![
+            blit(16.0, 4.0, AttackSprite::Background),
+            blit(progress as f32, 4.0, AttackSprite::Progress),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 /// The off-hand pocket sprite's size (`hotbar_offhand_left`/`_right`).
@@ -2135,5 +2220,59 @@ mod offhand_tests {
         let r = offhand_blit(w, h, false);
         assert!((l.x + l.w - bar_x).abs() < 1e-3);
         assert!((r.x - (bar_x + 182.0)).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod attack_indicator_tests {
+    use super::*;
+
+    fn sprites(v: &[HudBlit]) -> Vec<(AttackSprite, f32, f32)> {
+        v.iter()
+            .map(|b| match b.icon {
+                HudIcon::AttackIndicator(s) => (s, b.w, b.h),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// A charging swing draws the 16x4 background and a progress strip of
+    /// `(int)(scale * 17)` pixels, 16 px below the crosshair's centre row.
+    #[test]
+    fn a_charging_swing_draws_the_strip() {
+        let v = attack_indicator(0.5, 12.5, true, 426, 240);
+        assert_eq!(
+            sprites(&v),
+            [
+                (AttackSprite::Background, 16.0, 4.0),
+                (AttackSprite::Progress, 8.0, 4.0)
+            ]
+        );
+        // guiWidth / 2 - 8, guiHeight / 2 - 7 + 16.
+        assert_eq!((v[0].x, v[0].y), (205.0, 129.0));
+        assert_eq!((v[1].x, v[1].y), (205.0, 129.0));
+        // 0.999 * 17 truncates to 16: never a full bar before the full icon.
+        let nearly = attack_indicator(0.999, 12.5, true, 426, 240);
+        assert_eq!(nearly[1].w, 16.0);
+    }
+
+    /// At a full charge the sword icon shows only over a living, alive target
+    /// and only for a weapon slower than 5 ticks' delay; otherwise nothing.
+    #[test]
+    fn the_full_icon_needs_a_live_target_and_a_slow_weapon() {
+        let full = attack_indicator(1.0, 12.5, true, 426, 240);
+        assert_eq!(sprites(&full), [(AttackSprite::Full, 16.0, 16.0)]);
+        assert!(attack_indicator(1.0, 12.5, false, 426, 240).is_empty());
+        assert!(
+            attack_indicator(1.0, 5.0, true, 426, 240).is_empty(),
+            "a bare hand's delay is exactly 5: not above it"
+        );
+    }
+
+    /// A target does not hide the strip while it is still charging.
+    #[test]
+    fn a_target_does_not_replace_the_strip_mid_charge() {
+        let v = attack_indicator(0.4, 12.5, true, 426, 240);
+        assert_eq!(v.len(), 2);
     }
 }

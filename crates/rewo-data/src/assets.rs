@@ -1536,6 +1536,9 @@ pub struct HudSprites {
     pub jump_bar: [HudSprite; 3],
     /// `hud/hotbar_offhand_{left,right}`, 29x24 each, in that order.
     pub offhand: [HudSprite; 2],
+    /// `hud/crosshair_attack_indicator_{full,background,progress}`, in that
+    /// order: 16x16, 16x4, 16x4.
+    pub attack_indicator: [HudSprite; 3],
     /// `mob_effect/<name>.png` for every row of
     /// [`crate::mob_effect_table::MOB_EFFECTS`], in that order — which is
     /// the registry's protocol-id order, so the index IS the wire id.
@@ -3980,6 +3983,17 @@ fn bake_hud(jar: Jar) -> Option<HudSprites> {
         offhand: [
             get(jar, "gui/sprites/hud/hotbar_offhand_left.png")?,
             get(jar, "gui/sprites/hud/hotbar_offhand_right.png")?,
+        ],
+        attack_indicator: [
+            get(jar, "gui/sprites/hud/crosshair_attack_indicator_full.png")?,
+            get(
+                jar,
+                "gui/sprites/hud/crosshair_attack_indicator_background.png",
+            )?,
+            get(
+                jar,
+                "gui/sprites/hud/crosshair_attack_indicator_progress.png",
+            )?,
         ],
         effect_icons: {
             let mut out = Vec::with_capacity(crate::mob_effect_table::MOB_EFFECTS.len());

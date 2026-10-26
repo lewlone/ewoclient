@@ -57,6 +57,8 @@ pub struct Options {
     /// off. Read-only here (no Rewo screen sets it), so the line passes
     /// through a save untouched.
     pub entity_shadows: bool,
+    /// `options.attackIndicator` (`AttackIndicatorStatus`), default CROSSHAIR.
+    pub attack_indicator: AttackIndicator,
     /// `options.ambientOcclusion` — vanilla's "Smooth Lighting" (`options.ao`).
     ///
     /// Off, every block takes vanilla's FLAT lighting (`tesselateFlat`'s
@@ -125,6 +127,7 @@ impl Default for Options {
             vignette: true,
             clouds: CloudOption::Fancy,
             entity_shadows: true,
+            attack_indicator: AttackIndicator::Crosshair,
             // `OptionInstance.createBoolean("options.ao", true, ..)`
             // (`Options.java:236`) — ON unless the file says otherwise.
             smooth_lighting: true,
@@ -155,6 +158,31 @@ pub const KEY_VIGNETTE: &str = "vignette";
 /// `options.renderClouds`' key (`Options.java:1533`). Read, not written, as
 /// [`KEY_VIGNETTE`].
 pub const KEY_RENDER_CLOUDS: &str = "renderClouds";
+
+/// `options.attackIndicator`'s key (`Options.java:1594`). Read, not written, as
+/// [`KEY_VIGNETTE`].
+pub const KEY_ATTACK_INDICATOR: &str = "attackIndicator";
+
+/// `AttackIndicatorStatus`: `OFF(0)`, `CROSSHAIR(1)`, `HOTBAR(2)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttackIndicator {
+    Off,
+    #[default]
+    Crosshair,
+    Hotbar,
+}
+
+impl AttackIndicator {
+    /// `LEGACY_CODEC`: a plain int through `ByIdMap.continuous(.., WRAP)`, so
+    /// 3 is OFF again and -1 is HOTBAR.
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw.trim().parse::<i64>().ok()?.rem_euclid(3) {
+            0 => Self::Off,
+            1 => Self::Crosshair,
+            _ => Self::Hotbar,
+        })
+    }
+}
 
 /// `CloudStatus`: `OFF("false")`, `FAST("fast")`, `FANCY("true")`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,6 +302,13 @@ impl Options {
             KEY_RENDER_CLOUDS => match CloudOption::parse(raw) {
                 Some(c) => {
                     self.clouds = c;
+                    true
+                }
+                None => false,
+            },
+            KEY_ATTACK_INDICATOR => match AttackIndicator::parse(raw) {
+                Some(a) => {
+                    self.attack_indicator = a;
                     true
                 }
                 None => false,
@@ -604,6 +639,18 @@ mod tests {
         for line in existing.lines() {
             assert_eq!(out.matches(line).count(), 1, "{line}");
         }
+    }
+
+    #[test]
+    fn the_attack_indicator_reads_its_legacy_int_and_wraps() {
+        let read = |line: &str| Options::parse(line).attack_indicator;
+        assert_eq!(read("attackIndicator:0"), AttackIndicator::Off);
+        assert_eq!(read("attackIndicator:1"), AttackIndicator::Crosshair);
+        assert_eq!(read("attackIndicator:2"), AttackIndicator::Hotbar);
+        assert_eq!(read("attackIndicator:3"), AttackIndicator::Off, "wraps");
+        assert_eq!(read("attackIndicator:-1"), AttackIndicator::Hotbar, "wraps");
+        assert_eq!(read(""), AttackIndicator::Crosshair, "the default");
+        assert_eq!(read("attackIndicator:x"), AttackIndicator::Crosshair);
     }
 
     #[test]

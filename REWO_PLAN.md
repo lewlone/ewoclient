@@ -2182,6 +2182,7 @@ this shape once.
 | M401 (2026-10-21) — a sleeping mannequin draws lying down | **r223** | — | — |
 | HUD playtest parity (2026-10-26) — the off-hand pocket | — | HUD atlas y 224..248: `hotbar_offhand_left` (0,224), `_right` (30,224), 29x24; `ATLAS_H` 224 -> 256 | `hud::offhand_tests` (unit; no GPU gate yet) |
 | World playtest parity (2026-10-26) — villager outfits, entity shadows | — | entity atlas `ATLAS_H` 3648 -> 4032: the 66 villager / zombie-villager type, profession and level sheets pack after everything else (found by name; every pool below slid down 384 rows); shadows use their own `misc/shadow.png` sheet, not the atlas | `live_cmd::tests::every_sheet_finds_room_in_the_entity_atlas`, `the_pool_origins_are_what_their_comments_say`; `capeshot` f2's `VILLAGER_SHELF_GROWTH` |
+| HUD playtest parity (2026-10-26) — the attack indicator | — | HUD atlas y 224..: `crosshair_attack_indicator_full` (60,224) 16x16, `_background` (80,224) and `_progress` (80,230) 16x4 | `hud::attack_indicator_tests` (unit; no GPU gate yet) |
 | *(next free)* | **r73** | — | — |
 
 **⚠ This table said "next free: r51" until M166, and r51–r54 were already

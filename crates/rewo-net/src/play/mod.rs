@@ -730,6 +730,9 @@ pub struct PlaySession {
     /// respawn: `player.getLastDeathLocation()`, which the recovery compass
     /// points at.
     pub last_death_location: Option<crate::spawn_info::GlobalPos>,
+    /// `Player.attackStrengthTicker`: the attack indicator's clock. Ticked in
+    /// [`Self::tick`]'s tail; reset by an attack, a miss and a new player.
+    pub attack_strength: rewo_world::attack_strength::AttackStrength,
     /// The chunk-batch flow-control loop (M74). Rewo used to answer
     /// `chunk_batch_finished` with the literal `64.0`; vanilla answers this
     /// calculator, whose opening bid is `3.5`. See [`crate::chunk_batch`] —
@@ -2081,6 +2084,7 @@ impl<'a> Connection<'a> {
             client_info: self.client_info,
             level_is_flat: false,
             last_death_location: None,
+            attack_strength: Default::default(),
             // Vanilla seeds `chunkBatchStartTime` in the calculator's
             // constructor, so a `chunk_batch_finished` that somehow arrives
             // before any `chunk_batch_start` still measures a finite interval.
@@ -3432,6 +3436,10 @@ impl PlaySession {
         if self.spawned {
             self.animate_tick_sounds();
         }
+        // `Player.tick`: `attackStrengthTicker++`, and a changed main-hand
+        // item type resets it.
+        self.attack_strength
+            .tick(self.inventory.held().map(|s| s.item_id));
         self.ticks += 1;
         Ok(())
     }
@@ -5176,6 +5184,8 @@ impl PlaySession {
         let active = apply_spawn_info(&mut self.world, &self.dim_types, &spawn);
         self.level_is_flat = spawn.is_flat;
         self.last_death_location = spawn.last_death_location.clone();
+        // A new `LocalPlayer`: its ticker and last main-hand item start over.
+        self.attack_strength = Default::default();
         // M76. `handleLogin` builds the first `ClientLevel`, whose constructor
         // seeds the respawn data to `(8, 64, 8)` **of that level** — not to
         // `RespawnData.DEFAULT`, which no client ever holds. The server's
@@ -5246,6 +5256,8 @@ impl PlaySession {
         apply_spawn_game_mode(&mut self.game_state, &mut self.abilities, spawn);
         self.level_is_flat = spawn.is_flat;
         self.last_death_location = spawn.last_death_location.clone();
+        // A new `LocalPlayer`: its ticker and last main-hand item start over.
+        self.attack_strength = Default::default();
         let changed = WorldTransition {
             world: &mut self.world,
             dirty: &mut self.dirty,
@@ -6999,7 +7011,21 @@ impl PlaySession {
         let mut p = PacketWriter::packet(id);
         p.varint(entity_id);
         self.send(p)?;
+        // `MultiPlayerGameMode.attack`'s `player.resetAttackStrengthTicker()`.
+        self.attack_strength.reset();
         self.swing()
+    }
+
+    /// `Player.getCurrentItemAttackStrengthDelay`, from the synced
+    /// `attack_speed` attribute (its registered default, 4, before the server
+    /// has sent one).
+    pub fn attack_strength_delay(&self) -> f32 {
+        rewo_world::attack_strength::delay(self.local_attribute("attack_speed").unwrap_or(4.0))
+    }
+
+    /// `Player.getAttackStrengthScale(a)`.
+    pub fn attack_strength_scale(&self, a: f32) -> f32 {
+        self.attack_strength.scale(a, self.attack_strength_delay())
     }
 
     /// `MultiPlayerGameMode.interact` (M216): `ServerboundInteractPacket(

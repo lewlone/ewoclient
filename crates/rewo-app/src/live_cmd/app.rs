@@ -343,6 +343,7 @@ impl ApplicationHandler for LiveApp {
                 self.attack_held = false;
                 if let Some(a) = self.mining.stop() {
                     self.apply_mining(vec![a]);
+                    self.reset_attack_strength();
                 }
             }
             // Releasing the right button: `keyUse` is up, so the next tick's
@@ -1973,11 +1974,25 @@ impl LiveApp {
         Some((s.item_id, s.components))
     }
 
+    /// `player.resetAttackStrengthTicker()`, which `startAttack`'s MISS arm
+    /// and `stopDestroyBlock` both call.
+    fn reset_attack_strength(&mut self) {
+        if let Some(s) = self.session.as_mut() {
+            s.attack_strength.reset();
+        }
+    }
+
     /// `startAttack`'s BLOCK arm: `startDestroyBlock`, then the swing.
     pub(super) fn mining_press(&mut self) {
         let Some(t) = self.mining_target() else {
+            // `startAttack`'s MISS arm.
+            self.reset_attack_strength();
             return;
         };
+        if t.air {
+            // ...which a targeted air block also falls into.
+            self.reset_attack_strength();
+        }
         let creative = self
             .session
             .as_ref()
@@ -2027,6 +2042,7 @@ impl LiveApp {
             None => {
                 if let Some(a) = self.mining.stop() {
                     self.apply_mining(vec![a]);
+                    self.reset_attack_strength();
                 }
             }
         }
