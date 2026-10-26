@@ -4489,6 +4489,92 @@ pub(crate) fn dragon_frame(kind: EntityModelKind, yaw: f32, pitch: f32) -> (f32,
     )
 }
 
+/// M410 — `EntityRenderer.extractNameTags`' `scoreText`, per entity within
+/// the below-name distance (the attribute's default, 10 blocks, is applied
+/// to every entity) of `eye`: `belowNameDisplay()` — a mannequin's
+/// description (the `entity.minecraft.mannequin.label` default until one is
+/// synced; none when hidden), or for anything else its BELOW_NAME score,
+/// `formatValue(numberFormatOrDefault(NO_STYLE)) + " " + displayName`, keyed
+/// by its scoreboard name (a player's profile name, else its UUID). Plain
+/// text, as Rewo's name tags are.
+pub(crate) fn below_name_texts(
+    session: &PlaySession,
+    eye: [f64; 3],
+    alpha: f32,
+    lang: Option<&rewo_data::lang::Language>,
+) -> std::collections::HashMap<i32, String> {
+    below_name_texts_from(
+        &session.world.entities,
+        &session.scoreboard,
+        (session.player_type_id, session.mannequin_type_id),
+        eye,
+        alpha,
+        lang,
+    )
+}
+
+/// [`below_name_texts`] over its inputs: the table, the scoreboard, and the
+/// `(player, mannequin)` type ids.
+pub(crate) fn below_name_texts_from(
+    ents: &rewo_world::entities::EntityTable,
+    scoreboard: &rewo_net::scoreboard::Scoreboard,
+    (player_type, mannequin_type): (Option<i32>, Option<i32>),
+    eye: [f64; 3],
+    alpha: f32,
+    lang: Option<&rewo_data::lang::Language>,
+) -> std::collections::HashMap<i32, String> {
+    use rewo_net::scoreboard::{DisplaySlot, NumberFormat};
+    let objective = scoreboard.display_objective(DisplaySlot::BelowName);
+    let mut out = std::collections::HashMap::new();
+    for (id, e) in ents.iter() {
+        let p = e.render_pos(alpha);
+        let d2 = (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2);
+        if d2 >= 100.0 {
+            continue;
+        }
+        if mannequin_type == Some(e.type_id) {
+            let text = match ents.mannequin_description(id) {
+                Option::None => lang
+                    .and_then(|l| l.get("entity.minecraft.mannequin.label"))
+                    .unwrap_or("entity.minecraft.mannequin.label")
+                    .to_string(),
+                Some(Some(t)) => t.to_string(),
+                Some(Option::None) => continue,
+            };
+            out.insert(id, text);
+            continue;
+        }
+        let Some(obj) = objective else { continue };
+        let owner = match ents.name_of(e.uuid) {
+            Some(n) if player_type == Some(e.type_id) => n.to_string(),
+            _ => uuid_string(e.uuid),
+        };
+        let Some(score) = scoreboard.score(&owner, &obj.name) else {
+            continue;
+        };
+        let value = match score.number_format.as_ref().or(obj.number_format.as_ref()) {
+            Some(NumberFormat::Blank) => String::new(),
+            Some(NumberFormat::Fixed(c)) => rewo_world::chat_style::flatten(c, lang),
+            _ => score.value.to_string(),
+        };
+        let name = rewo_world::chat_style::flatten(&obj.display_name, lang);
+        out.insert(id, format!("{value} {name}"));
+    }
+    out
+}
+
+/// A UUID as `UUID.toString()` writes it (an entity's scoreboard name).
+pub(crate) fn uuid_string(u: u128) -> String {
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (u >> 96) as u32,
+        (u >> 80) as u16,
+        (u >> 64) as u16,
+        (u >> 48) as u16,
+        u & 0xFFFF_FFFF_FFFF
+    )
+}
+
 /// M409 — `EnderDragonRenderer.extractRenderState` from the dragon's flight
 /// state: the model's inputs, the renderer's yaw (history sample 7) and its
 /// pitch (`(y₅ − y₁₀)·10`). The partial tick is 0 while dying, as vanilla's
@@ -4981,6 +5067,8 @@ pub(super) fn collect_entities<'a>(
     // M406 — banner and shield pattern copies, for what entities drop and
     // hold (`None`: the plain models).
     patterns: Option<&'a super::icons::PatternModels>,
+    // M410 — this frame's below-name lines (`below_name_texts`).
+    score_texts: Option<&'a std::collections::HashMap<i32, String>>,
 ) -> Vec<EntityDraw<'a>> {
     let player_color = linear_rgb(0xE5, 0xB8, 0xC5); // accent rose
     let mob_color = linear_rgb(0x9A, 0x80, 0x87); // text mauve
@@ -5849,6 +5937,8 @@ pub(super) fn collect_entities<'a>(
                 item_names,
                 equipment,
             ),
+            // M410 — the below-name line.
+            score_text: score_texts.and_then(|m| m.get(&id)).map(String::as_str),
             // M403 — the elytra; a caped player's own cape sheet stands in
             // for a `use_player_texture` layer.
             wings: resolve_wings(

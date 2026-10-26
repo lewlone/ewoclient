@@ -466,6 +466,7 @@ pub(super) fn run_headless(
         frame_crosshair_pick(&session, &etypes, 1.0),
         None,
         None,
+        None,
     );
     for (id, e) in session.world.entities.iter() {
         let p = e.render_pos(1.0);

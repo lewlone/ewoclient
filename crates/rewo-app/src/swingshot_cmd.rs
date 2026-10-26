@@ -1398,6 +1398,7 @@ fn neutral_draw(kind: EntityModelKind, attack: SwingPose) -> EntityDraw<'static>
         fish_dye: None,
         cape: None,
         wings: None,
+        score_text: None,
     }
 }
 

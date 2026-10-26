@@ -1003,6 +1003,7 @@ fn check_render(
             fish_dye: None,
             cape: None,
             wings: None,
+            score_text: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -1081,6 +1082,7 @@ fn check_render(
             fish_dye: None,
             cape: None,
             wings: None,
+            score_text: None,
         };
         wr.set_entities(&[d], right, up.to_array(), 0.0);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;
@@ -1175,6 +1177,7 @@ fn check_render(
             fish_dye: None,
             cape: None,
             wings: None,
+            score_text: None,
         };
         wr.set_entities(&[d], right, up.to_array(), time);
         off.render(gpu, Some((&mut *wr, view_proj)), &draw, CLEAR)?;

@@ -54,7 +54,7 @@ use rewo_world::label::{
 
 use crate::live_cmd::{label_inputs_from_table, resolve_labels, LabelViewer};
 
-const EXPECTED_WITNESSES: usize = 53;
+const EXPECTED_WITNESSES: usize = 54;
 
 const W: u32 = 256;
 const H: u32 = 256;
@@ -1852,6 +1852,30 @@ fn check_wiring(
              non-zero count and both labels — this is the baseline every \
              suppression witness below is measured against. A gate that only \
              ever measured zero would pass for a renderer that drew nothing)"
+        ),
+    );
+
+    // M410 — a below-name line is a second tag: its plate and its glyphs
+    // (6 vertices each), exactly, beside the name's.
+    let mut tagged = crate::healthbarshot_cmd::neutral_draw();
+    tagged.name = Some("Bob");
+    let mut count = |score: Option<&'static str>| {
+        let mut d = tagged;
+        d.score_text = score;
+        wr.set_entities(
+            std::slice::from_ref(&d),
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            0.0,
+        );
+        wr.entity_pass().expect("entity pass").text_vert_count()
+    };
+    let (name_only, with_score) = (count(None), count(Some("NPC")));
+    c.record(
+        "f17.a_below_name_line_draws_as_a_second_tag",
+        name_only > 0 && with_score == name_only + 6 + 3 * 6,
+        format!(
+            "{name_only} text verts for the name alone, {with_score} with the \"NPC\" score line (want the name's plus one plate and three glyphs, 24)"
         ),
     );
 

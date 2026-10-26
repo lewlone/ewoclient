@@ -4550,7 +4550,10 @@ fn the_ender_dragon_draws_facing_forward() {
     // M409 — climbing (nose up 30°), the block forward tilts with it:
     // `R_x(30°)·(0, 0, 1) = (0, −sin 30°, cos 30°)`.
     let (_, off) = f(K::EnderDragon, 0.0, 30.0);
-    assert!((off[1] + 0.5).abs() < 1e-6 && (off[2] - 0.75f32.sqrt()).abs() < 1e-6, "{off:?}");
+    assert!(
+        (off[1] + 0.5).abs() < 1e-6 && (off[2] - 0.75f32.sqrt()).abs() < 1e-6,
+        "{off:?}"
+    );
 }
 
 /// M390 — `Piglin.getArmPose()`'s ladder in vanilla's order (dancing over
@@ -4696,4 +4699,41 @@ fn a_sulfur_cubes_block_sits_in_its_middle() {
         // The adult halves in the renderer, the baby in the layer.
         assert!((edge - 0.5 * 0.999).abs() < 1e-4, "{baby}: edge {edge}");
     }
+}
+
+/// M410 — a mannequin's below-name line is its description: the default
+/// label until one is synced, the synced text, nothing when hidden, and
+/// only within ten blocks; an entity's scoreboard name is its UUID string.
+#[test]
+fn a_mannequin_shows_its_description_below_its_name() {
+    use rewo_world::entities::{EntityState, EntityTable};
+    const MANNEQUIN: i32 = 77;
+    let mut t = EntityTable::default();
+    for (id, x) in [(1, 2.0), (2, 3.0), (3, 4.0), (4, 30.0)] {
+        t.add(id, EntityState::new(0, MANNEQUIN, x, 0.0, 0.0, 0.0, 0.0));
+    }
+    t.set_mannequin_description(2, Some("Shopkeeper".into()));
+    t.set_mannequin_description(3, None);
+    let sb = rewo_net::scoreboard::Scoreboard::new();
+    let texts = super::entities::below_name_texts_from(
+        &t,
+        &sb,
+        (None, Some(MANNEQUIN)),
+        [0.0; 3],
+        1.0,
+        None,
+    );
+    assert_eq!(
+        texts.get(&1).map(String::as_str),
+        Some("entity.minecraft.mannequin.label")
+    );
+    assert_eq!(texts.get(&2).map(String::as_str), Some("Shopkeeper"));
+    assert!(!texts.contains_key(&3), "hidden");
+    assert!(!texts.contains_key(&4), "beyond ten blocks");
+    assert_eq!(
+        super::entities::uuid_string(0x0123_4567_89ab_cdef_0011_2233_4455_6677),
+        "01234567-89ab-cdef-0011-223344556677"
+    );
+    // The name rises one line over a score line: 9 · 1.15 · 0.025 blocks.
+    assert!((rewo_gpu::entities::SCORE_LINE_LIFT - 0.25875).abs() < 1e-6);
 }

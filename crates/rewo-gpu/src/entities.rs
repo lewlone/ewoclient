@@ -240,6 +240,10 @@ pub struct EntityDraw<'a> {
     pub color: [f32; 3],
     /// Nametag text (players); `None` draws no tag.
     pub name: Option<&'a str>,
+    /// M410 — `EntityRenderState.scoreText` (`belowNameDisplay()`: a
+    /// below-name score, a mannequin's description), drawn at the tag's
+    /// place with the name lifted a line above it.
+    pub score_text: Option<&'a str>,
     /// Health and max health, when a floating health bar should be drawn
     /// (M59). `None` draws no bar — and `None` is load-bearing, not a
     /// placeholder: spec rules 4 and 5 say a bar is suppressed outright for a
@@ -2918,8 +2922,17 @@ impl EntityPass {
                 // M59: the health bar first, so a tag and a bar submitted for
                 // the same entity land adjacently in the buffer.
                 self.push_health_bar(&mut verts, d, cam_right, cam_up);
+                // M410 — `submitNameDisplay`: the score line at the
+                // attachment, then the name `9·1.15·0.025` blocks up.
+                let lift = match d.score_text {
+                    Some(score) => {
+                        self.push_tag(&mut verts, d, score, cam_right, cam_up, 0.0);
+                        SCORE_LINE_LIFT
+                    }
+                    Option::None => 0.0,
+                };
                 let Some(name) = d.name else { continue };
-                self.push_tag(&mut verts, d, name, cam_right, cam_up);
+                self.push_tag(&mut verts, d, name, cam_right, cam_up, lift);
             }
             // M262: world-text plates (text display backgrounds), translucent.
             self.emit_world_text_backdrops(&mut verts, world_text);
@@ -4328,11 +4341,13 @@ impl EntityPass {
         name: &str,
         right: [f32; 3],
         up: [f32; 3],
+        // M410 — blocks above the attachment (a name over a score line).
+        lift: f32,
     ) {
         let cell = self.cell as f32;
         let scale = TAG_PX * (8.0 / cell);
         let total_px: f32 = name.bytes().map(|b| self.advance[b as usize] as f32).sum();
-        let anchor = [d.pos[0], d.pos[1] + d.height + TAG_LIFT, d.pos[2]];
+        let anchor = [d.pos[0], d.pos[1] + d.height + TAG_LIFT + lift, d.pos[2]];
         let world = |px: f32, py: f32| -> [f32; 3] {
             [
                 anchor[0] + (right[0] * px + up[0] * py) * scale,
@@ -5953,6 +5968,10 @@ impl EntityFrame {
         [self.pos[0] + l[0], self.pos[1] + l[1], self.pos[2] + l[2]]
     }
 }
+
+/// M410 — `submitNameDisplay`'s `translate(0, 9·1.15·0.025, 0)`: how far
+/// the name rises over a score line, in blocks.
+pub const SCORE_LINE_LIFT: f32 = 9.0 * 1.15 * 0.025;
 
 /// M402 — two rotations a point runs through in order, the first about Y
 /// and the second about X (radians, as sine/cosine pairs): what a pose

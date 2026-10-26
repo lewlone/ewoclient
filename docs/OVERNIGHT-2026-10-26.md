@@ -17,7 +17,8 @@ commits, pushed 2026-10-25). **Nothing pushed.**
   shields wear their patterns as icons, dropped, framed and held), M407
   (decorated pot items wear their sherds), M408 (the first-person hand
   draws skinned heads and patterned items), M409 (the ender dragon flies
-  on its flight history: the audit's last open row); the
+  on its flight history: the audit's last open row), M410 (mannequins'
+  "NPC" description and below-name scores); the
   flakes (`srv` ports, r89, r214, r91, and the r329 class narrowed);
   CI's `audit` failure on main (two TLS advisories, lockfile only);
   Dependabot PR #6 diagnosed.

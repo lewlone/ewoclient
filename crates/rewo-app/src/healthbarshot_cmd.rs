@@ -526,6 +526,7 @@ pub(crate) fn neutral_draw() -> EntityDraw<'static> {
         fish_dye: None,
         cape: None,
         wings: None,
+        score_text: None,
     }
 }
 

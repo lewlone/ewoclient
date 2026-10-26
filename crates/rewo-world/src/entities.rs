@@ -1263,6 +1263,9 @@ pub struct EntityTable {
     /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
     /// `InteractionHand`. Cleared on removal.
     hand_profiles: HashMap<i32, [Option<String>; 2]>,
+    /// M410 — a mannequin's synced description (`Some(None)`: hidden).
+    /// Absent: never sent, the default label. Cleared on removal.
+    mannequin_descriptions: HashMap<i32, Option<String>>,
     /// M409 — the ender dragon's type id (from the registry, set by the
     /// session), so the table keeps a [`crate::glide::DragonState`] for each.
     dragon_type: Option<i32>,
@@ -2064,6 +2067,7 @@ impl EntityTable {
             hand_patterns,
             dragon_type: _,
             dragons,
+            mannequin_descriptions,
             avatar_profiles,
             body_armor,
             saddles,
@@ -2106,6 +2110,7 @@ impl EntityTable {
         stack_patterns.remove(&id);
         hand_patterns.remove(&id);
         dragons.remove(&id);
+        mannequin_descriptions.remove(&id);
         avatar_profiles.remove(&id);
         body_armor.remove(&id);
         saddles.remove(&id);
@@ -3052,6 +3057,17 @@ impl EntityTable {
         if slot.iter().all(Option::is_none) {
             self.hand_patterns.remove(&id);
         }
+    }
+
+    /// M410 — `Mannequin.DATA_DESCRIPTION` (`None`: hidden).
+    pub fn set_mannequin_description(&mut self, id: i32, d: Option<String>) {
+        self.mannequin_descriptions.insert(id, d);
+    }
+
+    /// M410 — a mannequin's description: `None` when never sent (the
+    /// default label), `Some(None)` when hidden.
+    pub fn mannequin_description(&self, id: i32) -> Option<Option<&str>> {
+        self.mannequin_descriptions.get(&id).map(|d| d.as_deref())
     }
 
     /// M409 — the ender dragon's type id; its entities keep a flight
@@ -5847,6 +5863,7 @@ mod side_state_tests {
             hand_patterns,
             dragon_type: _,
             dragons,
+            mannequin_descriptions,
             avatar_profiles,
             body_armor,
             saddles,
@@ -5893,6 +5910,7 @@ mod side_state_tests {
             stack_patterns.contains_key(&id),
             hand_patterns.contains_key(&id),
             dragons.contains_key(&id),
+            mannequin_descriptions.contains_key(&id),
             avatar_profiles.contains_key(&id),
             body_armor.contains_key(&id),
             saddles.contains_key(&id),

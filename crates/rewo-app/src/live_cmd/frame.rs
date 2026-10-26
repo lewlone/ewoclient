@@ -865,6 +865,17 @@ impl LiveApp {
                 }
             }
         }
+        // M410 — the below-name lines, owned here for the draws to borrow.
+        let score_texts = below_name_texts(
+            session,
+            [
+                session.player.x,
+                session.player.y + session.player.eye_height(),
+                session.player.z,
+            ],
+            alpha,
+            Some(&self.lang),
+        );
         let draws = collect_entities(
             session,
             &self.etypes,
@@ -883,6 +894,7 @@ impl LiveApp {
             frame_crosshair_pick(session, &self.etypes, alpha),
             Some(&self.head_skins),
             Some(&self.patterns),
+            Some(&score_texts),
         );
         // M163 — read the label OFF THE DRAW LIST, not off the entity table:
         // the claim is that the resolved string reached the renderer, and a

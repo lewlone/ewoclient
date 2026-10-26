@@ -555,6 +555,7 @@ fn render_capsule(
         fish_dye: None,
         cape: None,
         wings: None,
+        score_text: None,
     };
     wr.set_entities(&[capsule], right, up.to_array(), 0.0);
     off.render(gpu, Some((&mut *wr, view_proj)), draw, CLEAR)?;
@@ -943,6 +944,7 @@ fn silhouette(
         fish_dye: None,
         cape: None,
         wings: None,
+        score_text: None,
     };
     d.kind = EntityModelKind::Zombie;
 
@@ -1744,5 +1746,6 @@ fn render_marker_template() -> EntityDraw<'static> {
         fish_dye: None,
         cape: None,
         wings: None,
+        score_text: None,
     }
 }

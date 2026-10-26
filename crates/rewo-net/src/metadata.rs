@@ -325,6 +325,10 @@ pub struct EntityMeta {
     /// M309 — `Mannequin.DATA_PROFILE`, index 17, `RESOLVABLE_PROFILE`
     /// (serializer 41, which no other class uses): Avatar defines 15 and 16.
     pub avatar_profile: Option<rewo_world::entities::AvatarProfile>,
+    /// M410 — index 19 OPTIONAL_COMPONENT: `Mannequin.DATA_DESCRIPTION`,
+    /// flattened (`Some(None)`: hidden, `hide_description`). Kind-gated by
+    /// the caller.
+    pub description19: Option<Option<String>>,
     /// M194 — INT at 10, `ItemFrame.DATA_ROTATION`.
     pub int10: Option<i32>,
     /// M393 — FLOAT at 10: a boat's `VehicleEntity.DATA_ID_DAMAGE`
@@ -435,6 +439,16 @@ pub fn parse(r: &mut PacketReader, kinds: MetaKinds) -> EntityMeta {
             (1, 1) => meta.air_supply = r.varint().ok(),
             // INT at 7 = `Entity.DATA_TICKS_FROZEN` (M168) — `HeartType.FROZEN`.
             (7, 1) => meta.ticks_frozen = r.varint().ok(),
+            (19, 6) => match r.bool() {
+                Ok(true) => {
+                    if let Ok(nbt) = r.nbt() {
+                        meta.description19 =
+                            Some(Some(rewo_world::chat_style::flatten(&nbt, kinds.lang)));
+                    }
+                }
+                Ok(false) => meta.description19 = Some(None),
+                Err(_) => break,
+            },
             (2, 6) => {
                 // custom name (OPTIONAL_COMPONENT): bool + text component.
                 //

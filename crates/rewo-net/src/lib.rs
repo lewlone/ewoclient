@@ -2863,6 +2863,12 @@ pub(crate) fn apply_set_entity_data<'a>(
             entities.set_frame_rotation(eid, r);
         }
     }
+    // Slot 19 OPTIONAL_COMPONENT → `Mannequin.DATA_DESCRIPTION` (M410).
+    if let Some(d) = meta.description19.clone() {
+        if kinds.mannequin == Some(type_id) {
+            entities.set_mannequin_description(eid, d);
+        }
+    }
     // Slot 17 RESOLVABLE_PROFILE → `Mannequin.DATA_PROFILE` (M309). No kind
     // gate: the serializer is the mannequin's alone.
     if let Some(p) = meta.avatar_profile.clone() {

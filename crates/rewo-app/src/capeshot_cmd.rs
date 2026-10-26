@@ -2151,6 +2151,7 @@ fn check_pixels(
                 skin_uv: None,
                 cape: None,
                 wings: None,
+                score_text: None,
                 held: [None, None],
                 ..player_draw(None)
             };
@@ -2277,6 +2278,7 @@ fn player_draw<'a>(cape: Option<CapeDraw>) -> EntityDraw<'a> {
         anim_id: 0.0,
         cape,
         wings: None,
+        score_text: None,
     }
 }
 

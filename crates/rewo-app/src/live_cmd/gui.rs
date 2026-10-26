@@ -248,6 +248,7 @@ pub(super) fn preview_draw<'a>(
         cape: preview_cape(cape_origin),
         // M403 — no armour in the preview, so no elytra either.
         wings: None,
+        score_text: None,
     };
     let vp = rewo_gpu::container::preview_view_proj(w, h, PLAYER_HEIGHT, y_angle);
     let (rx, ry, rw, rh) = rewo_gpu::container::preview_rect(w, h);
