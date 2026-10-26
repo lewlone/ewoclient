@@ -154,7 +154,7 @@ targets that matter). Staying on 26.2 meanwhile, as asked.
 | `17a590fb` | **M434** — the sky: byte-space day/night multiply, `getBaseColor`, gamma-space sky mix and celestial blend; skyshot re-derived |
 | `0dc37867` | **M435** — clouds follow `renderClouds` and `cloudRange`, in vanilla's colour space |
 | `d695c5a6` | **M436** — entities take vanilla's two-light shading; mobtexshot's oracle over vanilla's shade range |
-| (next) | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
+| `174b195b` | **M437** — the dragon head draws from the ender dragon's sheet; itemshot c3g |
 
 ## A broken default build, fixed
 
