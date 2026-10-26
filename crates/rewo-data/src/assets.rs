@@ -2335,12 +2335,24 @@ pub fn bake(client_jar: &Path, blocks_json: &Path) -> Result<BakedAssets, String
             outline[id as usize] = if let Some(b) = constant_outline.get(block_name.as_str()) {
                 b.to_vec()
             } else if state_outline.contains(block_name.as_str()) {
-                match bs.as_ref() {
+                let from_model = match bs.as_ref() {
                     Some(bs) => {
                         let refs = baker.state_refs(bs, props);
                         baker.outline_boxes(&refs)
                     }
                     None => Vec::new(),
+                };
+                // A block-entity-rendered class (a chest, a bed, a shulker
+                // box) has a model with no geometry, so its outline came out
+                // EMPTY and the crosshair passed straight through it: a chest
+                // could not be targeted, opened or broken (found by the
+                // playtest harness, `tools/playtest/rewo_containers.yaml`).
+                // Those classes override `getShape` only, so the outline is
+                // the shape `special_collision` transcribes.
+                if from_model.is_empty() {
+                    special_collision(short, props).unwrap_or_default()
+                } else {
+                    from_model
                 }
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
@@ -7147,6 +7159,39 @@ mod tests {
             assert_eq!(
                 c.shade_dark, c.ao_occluder,
                 "oak_leaves uses the default ({id})"
+            );
+        }
+    }
+
+    /// A chest's model is `builtin/entity` (no elements), so a model-derived
+    /// outline was empty and the crosshair could not hit one. Every state of
+    /// the block-entity-rendered classes now has vanilla's `getShape`.
+    #[test]
+    fn block_entity_rendered_blocks_are_targetable() {
+        let Some((baked, raw)) = real() else {
+            crate::skip_test!("no local 26.2 jar/datagen report");
+            return;
+        };
+        const P: f32 = 1.0 / 16.0;
+        for block in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:red_bed",
+            "minecraft:shulker_box",
+        ] {
+            let ids = states_where(raw, block, &[]);
+            assert!(!ids.is_empty(), "{block}");
+            for id in ids {
+                assert!(
+                    !baked.outline[id].is_empty(),
+                    "{block} state {id} has no outline"
+                );
+            }
+        }
+        for id in states_where(raw, "minecraft:chest", &[("type", "single")]) {
+            assert_eq!(
+                baked.outline[id],
+                vec![[P, 0.0, P, 15.0 * P, 14.0 * P, 15.0 * P]]
             );
         }
     }

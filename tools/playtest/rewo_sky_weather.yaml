@@ -1,0 +1,35 @@
+# Coverage beyond Enni's lists: the sky through a day (sunrise colours, noon, sunset, night with the
+# moon and stars) and rain. Time and weather are set by command.
+name: rewo_sky_weather
+description: Look at the sky at sunrise, noon, sunset and midnight; then rain at noon.
+
+world:
+  freeze: false   # the rain level ramps on server ticks; time stays put (advance_time false)
+  server_commands:
+    - fill -2 -60 6 2 -57 6 minecraft:oak_log
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, -90, -20]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, command: "time set 23500"}
+  - {at: 6, capture: sunrise, checklist: "facing east at dawn: the sun low over the horizon with the orange sunrise glow around it"}
+  - {at: 8, command: "time set 6000"}
+  - {at: 8, look: {yaw: 0, pitch: -60}}
+  - {at: 14, capture: noon, checklist: "looking up at noon: the sun high, a light blue sky"}
+  - {at: 16, command: "time set 12500"}
+  - {at: 16, look: {yaw: 90, pitch: -15}}
+  - {at: 22, capture: sunset, checklist: "facing west at sunset: the sun low with an orange-red glow, the sky darkening"}
+  - {at: 24, command: "time set 18000"}
+  - {at: 24, look: {yaw: 0, pitch: -45}}
+  - {at: 30, capture: midnight, checklist: "midnight: a dark sky with stars and the moon"}
+  - {at: 32, command: "time set 6000"}
+  - {at: 32, command: "weather rain"}
+  - {at: 32, look: {yaw: 0, pitch: 0}}
+  - {at: 60, capture: rain, checklist: "rain falling at noon in front of an oak log wall; the sky grey and darker"}
+end_tick: 62

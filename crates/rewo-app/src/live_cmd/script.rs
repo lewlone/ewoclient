@@ -534,6 +534,7 @@ impl LiveApp {
             } else {
                 MouseButton::Left
             };
+            self.script_note_target(&what);
             self.script_mouse_button(event_loop, b, true);
             // A click is a press and a release, unless the key is held.
             let held = self
@@ -595,6 +596,33 @@ impl LiveApp {
             if let Some(s) = self.script.as_mut() {
                 s.event("mark", serde_json::json!({ "label": label }));
             }
+        }
+    }
+
+    /// `events.jsonl` gets what a click is aimed at (the crosshair's block,
+    /// as the use and attack paths pick it), so a scenario that misses shows it.
+    fn script_note_target(&mut self, what: &str) {
+        let target = self.session.as_ref().and_then(|session| {
+            let hit = session.target_shape(
+                eye_f64(session),
+                look_dir(session.player.yaw, session.player.pitch),
+                REACH,
+            )?;
+            let b = hit.hit.block;
+            let state = session.world.block_state_at(b[0], b[1], b[2]);
+            Some(serde_json::json!({
+                "block": b,
+                "state": state,
+                "name": self.blocks.block_name(state),
+                "face": format!("{:?}", hit.hit.face),
+                "distance": hit.hit.distance,
+            }))
+        });
+        if let Some(s) = self.script.as_mut() {
+            s.event(
+                "click",
+                serde_json::json!({ "what": what, "target": target }),
+            );
         }
     }
 

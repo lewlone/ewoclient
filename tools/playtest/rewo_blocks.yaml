@@ -1,0 +1,44 @@
+# Coverage beyond Enni's lists: a gallery of block shapes and render types - cutout (leaves, flowers,
+# glass), translucent (stained glass, water, ice), shaped (stairs, slabs, fences, walls, doors), block
+# entities (chest, bed, sign, banner, skull) and emissive blocks (torch, lantern, glowstone).
+name: rewo_blocks
+description: A block gallery in two rows, seen from the front and from above.
+
+world:
+  server_commands:
+    - setblock -6 -60 6 minecraft:oak_leaves[persistent=true]
+    - setblock -5 -60 6 minecraft:glass
+    - setblock -4 -60 6 minecraft:red_stained_glass
+    - setblock -3 -60 6 minecraft:ice
+    - setblock -2 -60 6 minecraft:oak_stairs[facing=south]
+    - setblock -1 -60 6 minecraft:stone_slab[type=bottom]
+    - setblock 0 -60 6 minecraft:oak_fence
+    - setblock 1 -60 6 minecraft:oak_fence
+    - setblock 2 -60 6 minecraft:cobblestone_wall
+    - setblock 3 -60 6 minecraft:poppy
+    - setblock 4 -60 6 minecraft:torch
+    - setblock 5 -60 6 minecraft:lantern
+    - setblock 6 -60 6 minecraft:glowstone
+    - setblock -6 -60 9 minecraft:chest[facing=north]
+    - setblock -4 -60 9 minecraft:red_bed[facing=south,part=foot]
+    - setblock -4 -60 10 minecraft:red_bed[facing=south,part=head]
+    - setblock -2 -60 9 minecraft:oak_sign[rotation=0]{front_text:{messages:['"Rewo"','"playtest"','""','""']}}
+    - setblock 0 -60 9 minecraft:white_banner[rotation=0]
+    - setblock 2 -60 9 minecraft:skeleton_skull[rotation=8]
+    - setblock 4 -60 9 minecraft:oak_door[facing=north,half=lower]
+    - setblock 4 -59 9 minecraft:oak_door[facing=north,half=upper]
+    - setblock 6 -61 9 minecraft:water
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 15]
+  commands: [clear @s]
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: front, checklist: "front row: leaves, glass, red stained glass, ice, oak stairs, a stone slab, two joined fences, a cobblestone wall post, a poppy, a torch, a lantern, glowstone; back row: a chest, a red bed, a sign reading 'Rewo / playtest', a white banner, a skeleton skull, an oak door, a water pool"}
+  - {at: 2, command: "tp @s 0.5 -55 3.5 0 70"}
+  - {at: 8, capture: above, checklist: "from above: the same blocks from the top; the bed's pillow end, the chest lid, the banner's top"}
+end_tick: 10

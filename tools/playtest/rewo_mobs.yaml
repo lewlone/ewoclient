@@ -1,0 +1,33 @@
+# Coverage beyond Enni's lists: mob models, textures, shadows and name tags. NoAI mobs at exact
+# spots under a frozen world, so both clients see the same poses.
+name: rewo_mobs
+description: A row of NoAI mobs (cow, sheep, pig, chicken, zombie, skeleton, creeper, villager, wolf) and a named one.
+
+world:
+  server_commands:
+    - setworldspawn 0 -60 0
+
+setup:
+  spawn: [0.5, -60, 0.5, 0, 5]
+  commands:
+    - clear @s
+    - 'summon minecraft:cow -4.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:sheep -2.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f],Color:14b}'
+    - 'summon minecraft:pig -0.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:chicken 1.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:zombie 3.5 -60 7.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:skeleton -3.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:creeper -1.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f]}'
+    - 'summon minecraft:villager 0.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],VillagerData:{type:"minecraft:plains",profession:"minecraft:farmer",level:1}}'
+    - 'summon minecraft:wolf 2.5 -60 11.5 {NoAI:1b,Rotation:[180f,0f],CustomName:"Rex",CustomNameVisible:1b}'
+
+client:
+  options: {guiScale: 3}
+
+steps:
+  - {at: 0, capture: row, checklist: "front row left to right: a cow, a red sheep, a pig, a chicken, a zombie; back row: a skeleton, a creeper, a farmer villager, a wolf named 'Rex' (name tag above it); all facing the camera, with round shadows on the grass"}
+  - {at: 2, look: {yaw: 20, pitch: 10}}
+  - {at: 4, capture: left, checklist: "turned left: the cow and the red sheep close up"}
+  - {at: 6, look: {yaw: -25, pitch: 10}}
+  - {at: 8, capture: right, checklist: "turned right: the zombie and the wolf with its name tag"}
+end_tick: 10
