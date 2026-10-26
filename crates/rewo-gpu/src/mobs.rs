@@ -960,6 +960,13 @@ pub struct MobCombat {
     /// 4): `setupRotations` lays the body along the look and spins it
     /// `−75°` a tick about its own length.
     pub auto_spin: bool,
+    /// M409 — an ender dragon's flight (`EnderDragonRenderState`); `None`
+    /// for every other kind, and for a dragon with no history yet (the
+    /// level-flight rig, M388).
+    pub dragon: Option<DragonInputs>,
+    /// M409 — `EnderDragonRenderer`'s body pitch in degrees,
+    /// `XP((y₅ − y₁₀)·10)`, applied before the yaw (0 for every other kind).
+    pub body_pitch: f32,
     /// M399 — `HumanoidRenderState.isCrouching` (`Entity.isCrouching()`:
     /// the CROUCHING pose), set for an avatar (a player or a mannequin).
     pub crouching: bool,
@@ -1002,6 +1009,39 @@ pub struct MobCombat {
     pub turtle_on_land: bool,
     /// M363 — `Boat.isUnderWater()` (the eye in water): no water patch.
     pub under_water: bool,
+}
+
+/// M409 — what `EnderDragonModel.setupAnim` reads off the render state:
+/// the lerped `flapTime`, the flight history's samples 0..24 back (`y`
+/// relative to sample 0, `yRot` in degrees), and the phase's two flags with
+/// the squared distance to the exit portal's top (`getHeadPartYOffset`).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct DragonInputs {
+    pub flap: f32,
+    pub y: [f32; DRAGON_HISTORY],
+    pub y_rot: [f32; DRAGON_HISTORY],
+    pub landing: bool,
+    pub sitting: bool,
+    pub distance_to_egg_sq: f32,
+}
+
+/// M409 — how far back the dragon's model reads its history (the tail's
+/// last segment, 12 + 11).
+pub const DRAGON_HISTORY: usize = 24;
+
+impl DragonInputs {
+    /// `EnderDragonRenderState.getHeadPartYOffset(part, bodyPos, partPos)`.
+    pub fn head_part_y_offset(&self, part: usize, body: usize, point: usize) -> f32 {
+        if self.landing {
+            part as f32 / (self.distance_to_egg_sq / 4.0).max(1.0)
+        } else if self.sitting {
+            part as f32
+        } else if part == 6 {
+            0.0
+        } else {
+            self.y[point] - self.y[body]
+        }
+    }
 }
 
 impl MobCombat {
@@ -13745,12 +13785,7 @@ pub fn dragon_pose(age: f32) -> ([[f32; 3]; DRAGON_SLOTS], [[f32; 3]; DRAGON_SLO
     let mut rot = [[0.0f32; 3]; DRAGON_SLOTS];
     let mut off = [[0.0f32; 3]; DRAGON_SLOTS];
     let flap = age * DRAGON_FLAP_PER_TICK * PI * 2.0;
-    rot[usize::from(DRAGON_JAW)][0] = (flap.sin() + 1.0) * 0.2;
-    let mut bounce = (flap - 1.0).sin() + 1.0;
-    bounce = (bounce * bounce + bounce * 2.0) * 0.05;
-    let r = usize::from(DRAGON_ROOT);
-    off[r] = [0.0, (bounce - 2.0) * 16.0, -48.0];
-    rot[r][0] = bounce * 2.0 * PI / 180.0;
+    dragon_rig(flap, &mut rot, &mut off);
     // The neck: each segment at the chain's running end, then the end moves
     // 10 px along the segment's pitch (straight flight: no yaw, no roll).
     let (mut y, mut z) = (20.0f32, -12.0f32);
@@ -13764,6 +13799,101 @@ pub fn dragon_pose(age: f32) -> ([[f32; 3]; DRAGON_SLOTS], [[f32; 3]; DRAGON_SLO
     }
     let h = usize::from(DRAGON_HEAD);
     off[h] = [0.0, y - 20.0, z - (-62.0)];
+    // The tail: turned π (`+180°`), its wave accumulating down the chain.
+    let (mut y, mut z) = (10.0f32, 60.0f32);
+    let mut wave = 0.0f32;
+    for i in 0..12usize {
+        let s = usize::from(DRAGON_TAIL) + i;
+        wave += (i as f32 * 0.45 + flap).sin() * 0.05;
+        rot[s] = [wave, PI, 0.0];
+        off[s] = [0.0, y - 10.0, z - (60.0 + i as f32 * 10.0)];
+        y += wave.sin() * 10.0;
+        z -= PI.cos() * wave.cos() * 10.0;
+    }
+    (rot, off)
+}
+
+/// M409 — `EnderDragonModel.setupAnim` in full: [`dragon_pose`]'s rig with
+/// the flight history's terms. Each neck segment `5 − i` ticks back turns by
+/// its yaw against sample 6 (×1.5), pitches by its height against it
+/// (`getHeadPartYOffset`, ×1.5×5) on top of the wave, and rolls against the
+/// mean of samples 5 and 10; the head reads sample 0; the body rolls by the
+/// yaw change from sample 10 to 5; the tail's segment `i` reads sample
+/// `12 + i` against 11. Positions chain 10 px along each segment, yaw
+/// included. With a level, straight history it is [`dragon_pose`] exactly.
+pub fn dragon_flight_pose(
+    d: &DragonInputs,
+) -> ([[f32; 3]; DRAGON_SLOTS], [[f32; 3]; DRAGON_SLOTS]) {
+    use std::f32::consts::PI;
+    const DEG: f32 = PI / 180.0;
+    let wrap = |a: f32| {
+        let mut w = a % 360.0;
+        if w >= 180.0 {
+            w -= 360.0;
+        }
+        if w < -180.0 {
+            w += 360.0;
+        }
+        w
+    };
+    let mut rot = [[0.0f32; 3]; DRAGON_SLOTS];
+    let mut off = [[0.0f32; 3]; DRAGON_SLOTS];
+    let flap = d.flap * PI * 2.0;
+    dragon_rig(flap, &mut rot, &mut off);
+    let start = 6;
+    let rot2 = wrap(d.y_rot[5] - d.y_rot[10]);
+    let mean = wrap(d.y_rot[5] + rot2 / 2.0);
+    let (mut x, mut y, mut z) = (0.0f32, 20.0f32, -12.0f32);
+    for i in 0..5usize {
+        let s = usize::from(DRAGON_NECK) + i;
+        let p = 5 - i;
+        let wave = (i as f32 * 0.45 + flap).cos() * 0.15;
+        let yr = wrap(d.y_rot[p] - d.y_rot[start]) * DEG * 1.5;
+        let xr = wave + d.head_part_y_offset(i, start, p) * DEG * 1.5 * 5.0;
+        let zr = -wrap(d.y_rot[p] - mean) * DEG * 1.5;
+        rot[s] = [xr, yr, zr];
+        off[s] = [x, y - 20.0, z - (-12.0 - i as f32 * 10.0)];
+        x -= yr.sin() * xr.cos() * 10.0;
+        y += xr.sin() * 10.0;
+        z -= yr.cos() * xr.cos() * 10.0;
+    }
+    let h = usize::from(DRAGON_HEAD);
+    off[h] = [x, y - 20.0, z - (-62.0)];
+    rot[h] = [
+        wrap(d.head_part_y_offset(6, start, 0)) * DEG * 1.5 * 5.0,
+        wrap(d.y_rot[0] - d.y_rot[start]) * DEG,
+        -wrap(d.y_rot[0] - mean) * DEG,
+    ];
+    rot[usize::from(DRAGON_BODY)][2] = -rot2 * 1.5 * DEG;
+    let (mut x, mut y, mut z) = (0.0f32, 10.0f32, 60.0f32);
+    let mut wave = 0.0f32;
+    let start = 11;
+    for i in 0..12usize {
+        let s = usize::from(DRAGON_TAIL) + i;
+        let p = 12 + i;
+        wave += (i as f32 * 0.45 + flap).sin() * 0.05;
+        let yr = (wrap(d.y_rot[p] - d.y_rot[start]) * 1.5 + 180.0) * DEG;
+        let xr = wave + (d.y[p] - d.y[start]) * DEG * 1.5 * 5.0;
+        let zr = wrap(d.y_rot[p] - mean) * DEG * 1.5;
+        rot[s] = [xr, yr, zr];
+        off[s] = [x, y - 10.0, z - (60.0 + i as f32 * 10.0)];
+        y += xr.sin() * 10.0;
+        z -= yr.cos() * xr.cos() * 10.0;
+        x -= yr.sin() * xr.cos() * 10.0;
+    }
+    (rot, off)
+}
+
+/// The history-free half of `EnderDragonModel.setupAnim`: the jaw, the
+/// root's bounce, the wings and the legs.
+fn dragon_rig(flap: f32, rot: &mut [[f32; 3]; DRAGON_SLOTS], off: &mut [[f32; 3]; DRAGON_SLOTS]) {
+    use std::f32::consts::PI;
+    rot[usize::from(DRAGON_JAW)][0] = (flap.sin() + 1.0) * 0.2;
+    let mut bounce = (flap - 1.0).sin() + 1.0;
+    bounce = (bounce * bounce + bounce * 2.0) * 0.05;
+    let r = usize::from(DRAGON_ROOT);
+    off[r] = [0.0, (bounce - 2.0) * 16.0, -48.0];
+    rot[r][0] = bounce * 2.0 * PI / 180.0;
     // The wings.
     let lw = usize::from(DRAGON_LWING);
     let rw = usize::from(DRAGON_RWING);
@@ -13781,18 +13911,6 @@ pub fn dragon_pose(age: f32) -> ([[f32; 3]; DRAGON_SLOTS], [[f32; 3]; DRAGON_SLO
         rot[first + 4][0] = k;
         rot[first + 5][0] = k;
     }
-    // The tail: turned π (`+180°`), its wave accumulating down the chain.
-    let (mut y, mut z) = (10.0f32, 60.0f32);
-    let mut wave = 0.0f32;
-    for i in 0..12usize {
-        let s = usize::from(DRAGON_TAIL) + i;
-        wave += (i as f32 * 0.45 + flap).sin() * 0.05;
-        rot[s] = [wave, PI, 0.0];
-        off[s] = [0.0, y - 10.0, z - (60.0 + i as f32 * 10.0)];
-        y += wave.sin() * 10.0;
-        z -= PI.cos() * wave.cos() * 10.0;
-    }
-    (rot, off)
 }
 
 /// `HappyGhastModel`: the tame ghast — body + big inner cube, nine short
@@ -17815,5 +17933,64 @@ mod dragon_pose_tests {
         assert!((rot[usize::from(DRAGON_TAIL)][1] - std::f32::consts::PI).abs() < 1e-6);
         let (lw, rw) = (usize::from(DRAGON_LWING), usize::from(DRAGON_RWING));
         assert_eq!((rot[lw][2], rot[lw][1]), (-rot[rw][2], -rot[rw][1]));
+    }
+
+    /// M409 — the flight-history pose: with a level, straight history it is
+    /// M388's rig exactly; turning, the neck bends toward the newer yaw and
+    /// the body rolls; climbing, the tail pitches by its height difference;
+    /// sitting, each neck segment lifts by its index.
+    #[test]
+    fn the_dragon_bends_with_its_flight_history() {
+        for age in [0.0f32, 7.3, 31.0] {
+            let d = DragonInputs {
+                flap: age * DRAGON_FLAP_PER_TICK,
+                y_rot: [40.0; DRAGON_HISTORY],
+                ..Default::default()
+            };
+            let (a, ao) = dragon_flight_pose(&d);
+            let (b, bo) = dragon_pose(age);
+            for i in 0..DRAGON_SLOTS {
+                for k in 0..3 {
+                    assert!(
+                        (a[i][k] - b[i][k]).abs() < 1e-5 && (ao[i][k] - bo[i][k]).abs() < 1e-4,
+                        "{age} slot {i}"
+                    );
+                }
+            }
+        }
+        // Turning: the newest samples 20° on from the older ones.
+        let mut y_rot = [0.0f32; DRAGON_HISTORY];
+        y_rot[..6].fill(20.0);
+        let turn = DragonInputs {
+            y_rot,
+            ..Default::default()
+        };
+        let (r, o) = dragon_flight_pose(&turn);
+        let n0 = usize::from(DRAGON_NECK);
+        assert!((r[n0][1] - 30f32.to_radians()).abs() < 1e-5, "{:?}", r[n0]);
+        assert!(
+            o[usize::from(DRAGON_HEAD)][0] < -1.0,
+            "the head swings off-centre"
+        );
+        assert!((r[usize::from(DRAGON_BODY)][2] + 30f32.to_radians()).abs() < 1e-5);
+        // Climbing: the tail reads its height against sample 11.
+        let mut y = [0.0f32; DRAGON_HISTORY];
+        y[12..].fill(-1.0);
+        let climb = DragonInputs {
+            y,
+            ..Default::default()
+        };
+        let (r, _) = dragon_flight_pose(&climb);
+        let t0 = usize::from(DRAGON_TAIL);
+        let wave = (0.45f32 * 0.0).sin() * 0.05;
+        assert!((r[t0][0] - (wave - 7.5f32.to_radians())).abs() < 1e-5);
+        // Sitting: neck segment i pitches by i·7.5°.
+        let sit = DragonInputs {
+            sitting: true,
+            ..Default::default()
+        };
+        let (r, _) = dragon_flight_pose(&sit);
+        let wave2 = (2.0f32 * 0.45).cos() * 0.15;
+        assert!((r[n0 + 2][0] - (wave2 + 15f32.to_radians())).abs() < 1e-5);
     }
 }

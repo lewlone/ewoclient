@@ -1749,6 +1749,9 @@ pub(crate) fn resolve_mob_combat(
         flying_y_rot: None,
         // M402 — `isAutoSpinAttack()`, any living entity.
         auto_spin: entities.use_state(id).auto_spin,
+        // M409 — set by the caller for an ender dragon.
+        dragon: None,
+        body_pitch: 0.0,
         // M381 — set by the caller for a rider.
         riding: false,
         // M379 — set by the caller for a witch.
@@ -4471,12 +4474,66 @@ pub(crate) fn farm_model_kind(kind: EntityModelKind, model: Option<&str>) -> Ent
 /// block forward in that frame, `R_y(−yr)·(0, 0, 1) = (−sin yr, cos yr)`;
 /// the generic draw turns `180 − yaw`, so the dragon's yaw gains 180°.
 /// Every other kind: its yaw, no offset.
-pub(crate) fn dragon_frame(kind: EntityModelKind, yaw: f32) -> (f32, [f32; 2]) {
+///
+/// M409 — with the renderer's pitch `p` (degrees, `XP(p)` between the turn
+/// and the translate) the block forward is `R_y(−yr)·R_x(p)·(0, 0, 1) =
+/// (−sin yr·cos p, −sin p, cos yr·cos p)`.
+pub(crate) fn dragon_frame(kind: EntityModelKind, yaw: f32, pitch: f32) -> (f32, [f32; 3]) {
     if kind != EntityModelKind::EnderDragon {
-        return (yaw, [0.0; 2]);
+        return (yaw, [0.0; 3]);
     }
-    let r = yaw.to_radians();
-    (yaw + 180.0, [-r.sin(), r.cos()])
+    let (r, p) = (yaw.to_radians(), pitch.to_radians());
+    (
+        yaw + 180.0,
+        [-r.sin() * p.cos(), -p.sin(), r.cos() * p.cos()],
+    )
+}
+
+/// M409 — `EnderDragonRenderer.extractRenderState` from the dragon's flight
+/// state: the model's inputs, the renderer's yaw (history sample 7) and its
+/// pitch (`(y₅ − y₁₀)·10`). The partial tick is 0 while dying, as vanilla's
+/// is; the egg is the heightmap top at the fight origin, which a client
+/// leaves at (0, 0) (`EndPodiumFeature.getLocation(BlockPos.ZERO)`).
+pub(crate) fn dragon_render_inputs(
+    session: &PlaySession,
+    id: i32,
+    alpha: f32,
+) -> Option<(rewo_gpu::mobs::DragonInputs, f32, f32)> {
+    use rewo_gpu::mobs::DRAGON_HISTORY;
+    let ents = &session.world.entities;
+    let st = ents.dragon(id)?;
+    let partial = if ents.death_state(id).is_dead_or_dying() {
+        0.0
+    } else {
+        alpha
+    };
+    let sample = |i: usize| st.sample(i, partial);
+    let y0 = sample(0).0;
+    let phase = ents.dragon_phase(id);
+    let e = ents.get(id)?;
+    let p = e.render_pos(alpha);
+    let egg_y = session
+        .world
+        .column(0, 0)
+        .and_then(|c| c.motion_blocking.as_ref())
+        .map_or(p[1], |h| h[0] as f64);
+    let d = [p[0] - 0.5, p[1] - (egg_y + 0.5), p[2] - 0.5];
+    let inputs = rewo_gpu::mobs::DragonInputs {
+        flap: st.flap_o + alpha * (st.flap - st.flap_o),
+        y: std::array::from_fn::<f32, DRAGON_HISTORY, _>(|i| (sample(i).0 - y0) as f32),
+        y_rot: std::array::from_fn::<f32, DRAGON_HISTORY, _>(|i| sample(i).1),
+        landing: matches!(
+            phase,
+            rewo_world::glide::DRAGON_LANDING | rewo_world::glide::DRAGON_TAKEOFF
+        ),
+        sitting: rewo_world::glide::dragon_phase_sits(phase),
+        distance_to_egg_sq: (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f32,
+    };
+    Some((
+        inputs,
+        sample(7).1,
+        ((sample(5).0 - sample(10).0) * 10.0) as f32,
+    ))
 }
 
 /// M367 — `HoglinModel.setupAnim`'s `headbuttLerpFactor = 1 − |10 − 2r| /
@@ -5574,20 +5631,36 @@ pub(super) fn collect_entities<'a>(
         // `rotY(−yr)` (the generic draw's `180 − yaw`, so the dragon drew
         // facing backward until M386) then a block forward,
         // `translate(0, 0, 1)` in the turned frame.
-        let (draw_yaw, forward) = dragon_frame(kind, e.render_yaw(alpha));
+        // M409 — a dragon with a flight history turns by its sample 7 and
+        // pitches by its climb; its model reads the history too.
+        let dragon = if kind == EntityModelKind::EnderDragon {
+            dragon_render_inputs(session, id, alpha)
+        } else {
+            None
+        };
+        let (draw_yaw, forward) = dragon_frame(
+            kind,
+            dragon.map_or(e.render_yaw(alpha), |(_, yr, _)| yr),
+            dragon.map_or(0.0, |(_, _, p)| p),
+        );
+        if let Some((inputs, _, pitch)) = dragon {
+            mob.dragon = Some(inputs);
+            mob.body_pitch = pitch;
+        }
         out.push(EntityDraw {
             pos: [
                 p[0] as f32 + forward[0] + sleep_shift[0],
                 // M399 — `AvatarRenderer.getRenderOffset`: a crouching
                 // avatar sits `scale·2/16` lower.
                 p[1] as f32
+                    + forward[1]
                     + if is_orb { 0.1 } else { 0.0 }
                     + if mob.crouching {
                         -2.0 / 16.0 * scale_mul
                     } else {
                         0.0
                     },
-                p[2] as f32 + forward[1] + sleep_shift[1],
+                p[2] as f32 + forward[2] + sleep_shift[1],
             ],
             width: w,
             height: h,

@@ -1263,6 +1263,12 @@ pub struct EntityTable {
     /// (`ClientboundSetEquipmentPacket`, slots 0 and 1), by
     /// `InteractionHand`. Cleared on removal.
     hand_profiles: HashMap<i32, [Option<String>; 2]>,
+    /// M409 — the ender dragon's type id (from the registry, set by the
+    /// session), so the table keeps a [`crate::glide::DragonState`] for each.
+    dragon_type: Option<i32>,
+    /// M409 — each ender dragon's flap and flight history. Cleared on
+    /// removal.
+    dragons: HashMap<i32, crate::glide::DragonState>,
     /// M406 — a dropped or framed banner's or shield's patterns. Cleared
     /// on removal.
     stack_patterns: HashMap<i32, crate::inventory::StackPatterns>,
@@ -2056,6 +2062,8 @@ impl EntityTable {
             hand_profiles,
             stack_patterns,
             hand_patterns,
+            dragon_type: _,
+            dragons,
             avatar_profiles,
             body_armor,
             saddles,
@@ -2097,6 +2105,7 @@ impl EntityTable {
         hand_profiles.remove(&id);
         stack_patterns.remove(&id);
         hand_patterns.remove(&id);
+        dragons.remove(&id);
         avatar_profiles.remove(&id);
         body_armor.remove(&id);
         saddles.remove(&id);
@@ -3045,6 +3054,26 @@ impl EntityTable {
         }
     }
 
+    /// M409 — the ender dragon's type id; its entities keep a flight
+    /// history from their next tick.
+    pub fn set_dragon_type(&mut self, type_id: Option<i32>) {
+        self.dragon_type = type_id;
+    }
+
+    /// M409 — an ender dragon's flap and flight history.
+    pub fn dragon(&self, id: i32) -> Option<&crate::glide::DragonState> {
+        self.dragons.get(&id)
+    }
+
+    /// M409 — `EnderDragon.DATA_PHASE` (index 16, INT, which the generic
+    /// route stores with the cube mobs' size): HOVERING until sent.
+    pub fn dragon_phase(&self, id: i32) -> i32 {
+        self.sizes
+            .get(&id)
+            .copied()
+            .unwrap_or(crate::glide::DRAGON_HOVERING)
+    }
+
     /// M406 — every dropped or framed stack's patterns, by entity.
     pub fn all_stack_patterns(
         &self,
@@ -3855,6 +3884,25 @@ impl EntityTable {
                     .copied()
                     == Some(p)
             });
+            // M409 — an ender dragon's `aiStep`: its flap, and the flight
+            // history recorded before this tick's interpolation step.
+            if self.dragon_type.is_some_and(|t| t == e.type_id) {
+                let phase = self
+                    .sizes
+                    .get(id)
+                    .copied()
+                    .unwrap_or(crate::glide::DRAGON_HOVERING);
+                let dying = self.deaths.get(id).is_some_and(|d| d.is_dead_or_dying());
+                let no_ai = self.mob_state.get(id).is_some_and(|m| m.flags & 1 != 0);
+                self.dragons.entry(*id).or_default().tick(
+                    e.cur[1],
+                    e.yaw,
+                    e.delta_movement,
+                    phase,
+                    dying,
+                    no_ai,
+                );
+            }
             // M394 — `Level.tickNonPassenger`: `tickCount++` then `tick()`.
             e.tick_count += 1;
             e.tick(fall_flying, authoritative);
@@ -5797,6 +5845,8 @@ mod side_state_tests {
             hand_profiles,
             stack_patterns,
             hand_patterns,
+            dragon_type: _,
+            dragons,
             avatar_profiles,
             body_armor,
             saddles,
@@ -5842,6 +5892,7 @@ mod side_state_tests {
             hand_profiles.contains_key(&id),
             stack_patterns.contains_key(&id),
             hand_patterns.contains_key(&id),
+            dragons.contains_key(&id),
             avatar_profiles.contains_key(&id),
             body_armor.contains_key(&id),
             saddles.contains_key(&id),

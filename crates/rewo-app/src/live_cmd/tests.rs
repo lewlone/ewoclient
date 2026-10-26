@@ -4541,12 +4541,16 @@ fn the_headbutt_rises_and_falls_over_ten_ticks() {
 fn the_ender_dragon_draws_facing_forward() {
     use rewo_gpu::mobs::EntityModelKind as K;
     let f = super::entities::dragon_frame;
-    assert_eq!(f(K::Zombie, 30.0), (30.0, [0.0, 0.0]));
-    let (yaw, off) = f(K::EnderDragon, 0.0);
+    assert_eq!(f(K::Zombie, 30.0, 10.0), (30.0, [0.0; 3]));
+    let (yaw, off) = f(K::EnderDragon, 0.0, 0.0);
     assert_eq!(yaw, 180.0);
-    assert!(off[0].abs() < 1e-6 && (off[1] - 1.0).abs() < 1e-6);
-    let (_, off) = f(K::EnderDragon, 90.0);
-    assert!((off[0] + 1.0).abs() < 1e-6 && off[1].abs() < 1e-6);
+    assert!(off[0].abs() < 1e-6 && off[1].abs() < 1e-6 && (off[2] - 1.0).abs() < 1e-6);
+    let (_, off) = f(K::EnderDragon, 90.0, 0.0);
+    assert!((off[0] + 1.0).abs() < 1e-6 && off[2].abs() < 1e-6);
+    // M409 — climbing (nose up 30°), the block forward tilts with it:
+    // `R_x(30°)·(0, 0, 1) = (0, −sin 30°, cos 30°)`.
+    let (_, off) = f(K::EnderDragon, 0.0, 30.0);
+    assert!((off[1] + 0.5).abs() < 1e-6 && (off[2] - 0.75f32.sqrt()).abs() < 1e-6, "{off:?}");
 }
 
 /// M390 — `Piglin.getArmPose()`'s ladder in vanilla's order (dancing over

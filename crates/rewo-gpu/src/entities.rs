@@ -5842,6 +5842,9 @@ pub struct EntityFrame {
     /// The swim's `XP(tilt)` (sine, cosine) after its `translate`.
     swim: Option<(f32, f32, [f32; 3])>,
     inner: InnerRotation,
+    /// M409 — the dragon renderer's `XP(pitch)` (sine, cosine), before the
+    /// yaw.
+    pitch: Option<(f32, f32)>,
     /// `YP(180 − bodyRot)` (sine, cosine).
     yaw: (f32, f32),
     mount: Option<[[f32; 4]; 3]>,
@@ -5889,6 +5892,7 @@ impl EntityFrame {
             glide: glide_rotations(&d.mob),
             swim,
             inner,
+            pitch: (d.mob.body_pitch != 0.0).then(|| (d.mob.body_pitch * DEG).sin_cos()),
             yaw: theta.sin_cos(),
             mount: d.mount,
         }
@@ -5919,7 +5923,14 @@ impl EntityFrame {
             None => e,
         };
         let (st, ct) = self.yaw;
-        let yawed = |e: [f32; 3]| [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct];
+        let pitched = |e: [f32; 3]| match self.pitch {
+            Some((s, c)) => [e[0], e[1] * c - e[2] * s, e[1] * s + e[2] * c],
+            None => e,
+        };
+        let yawed = |e: [f32; 3]| {
+            let e = pitched(e);
+            [e[0] * ct + e[2] * st, e[1], -e[0] * st + e[2] * ct]
+        };
         let w = match self.inner {
             InnerRotation::Topple(sr, cr) => {
                 yawed([e[0] * cr - e[1] * sr, e[0] * sr + e[1] * cr, e[2]])
@@ -6472,7 +6483,11 @@ fn anim_delta_base(anim: mobs::Anim, amp: f32, c: &AnimCtx) -> ([f32; 3], [f32; 
         }
         // M388 — `EnderDragonModel.setupAnim` (straight, level flight).
         Dragon { part } => {
-            let (r, o) = mobs::dragon_pose(c.age);
+            // M409 — with the flight history when the dragon has one.
+            let (r, o) = match &c.mob.dragon {
+                Some(d) => mobs::dragon_flight_pose(d),
+                Option::None => mobs::dragon_pose(c.age),
+            };
             let i = usize::from(part).min(mobs::DRAGON_SLOTS - 1);
             rot = r[i];
             off = o[i];
@@ -11895,6 +11910,7 @@ mod boat_anim_tests {
             glide,
             swim: None,
             inner,
+            pitch: None,
             yaw: (180f32.to_radians()).sin_cos(),
             mount: None,
         };

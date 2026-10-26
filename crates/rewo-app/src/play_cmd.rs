@@ -732,6 +732,11 @@ pub fn run(mut args: PlayArgs) -> Result<(), String> {
     session.tnt_type_id = data.entity_types.id_of("minecraft:tnt");
     session.creeper_type_id = data.entity_types.id_of("minecraft:creeper");
     session.wither_type_id = data.entity_types.id_of("minecraft:wither");
+    // M409 — the dragons keep a flight history.
+    session
+        .world
+        .entities
+        .set_dragon_type(data.entity_types.id_of("minecraft:ender_dragon"));
     session.block_display_type_id = data.entity_types.id_of("minecraft:block_display");
     session.creaking_type_id = data.entity_types.id_of("minecraft:creaking");
     // M60: the player, for the index-16 skin-customisation byte (cape bit).

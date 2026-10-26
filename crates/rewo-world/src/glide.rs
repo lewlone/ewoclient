@@ -108,6 +108,106 @@ impl ElytraAnimation {
     }
 }
 
+/// M409 — `EnderDragonPhase` ids (creation order).
+pub const DRAGON_LANDING: i32 = 3;
+pub const DRAGON_TAKEOFF: i32 = 4;
+/// `EnderDragonPhase.HOVERING`, the synced phase's default.
+pub const DRAGON_HOVERING: i32 = 10;
+
+/// M409 — whether a phase `isSitting()`: the three sitting phases and
+/// hovering (`DragonHoverPhase` says so too).
+pub fn dragon_phase_sits(phase: i32) -> bool {
+    matches!(phase, 5..=7 | DRAGON_HOVERING)
+}
+
+/// M409 — an ender dragon's client state: `flapTime` / `oFlapTime` and its
+/// `DragonFlightHistory` (64 samples of `(y, yRot)`, recorded each tick in
+/// `aiStep`), which bend its neck and tail and pitch its body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DragonState {
+    pub flap: f32,
+    pub flap_o: f32,
+    samples: [(f64, f32); 64],
+    head: i32,
+}
+
+impl Default for DragonState {
+    fn default() -> Self {
+        Self {
+            flap: 0.0,
+            flap_o: 0.0,
+            samples: [(0.0, 0.0); 64],
+            head: -1,
+        }
+    }
+}
+
+impl DragonState {
+    /// `DragonFlightHistory.record`: the first sample fills the whole ring.
+    pub fn record(&mut self, y: f64, y_rot: f32) {
+        if self.head < 0 {
+            self.samples = [(y, y_rot); 64];
+        }
+        self.head = (self.head + 1) % 64;
+        self.samples[self.head as usize] = (y, y_rot);
+    }
+
+    fn at(&self, delay: usize) -> (f64, f32) {
+        self.samples[((self.head - delay as i32) & 63) as usize]
+    }
+
+    /// `DragonFlightHistory.get(delay, partialTicks)`: the sample `delay`
+    /// ticks back, lerped from the one before it (`rotLerp` for the yaw).
+    pub fn sample(&self, delay: usize, partial: f32) -> (f64, f32) {
+        let (y, r) = self.at(delay);
+        let (y0, r0) = self.at(delay + 1);
+        (
+            y0 + (y - y0) * partial as f64,
+            r0 + partial * wrap_degrees(r - r0),
+        )
+    }
+
+    /// `EnderDragon.aiStep`'s client part: `oFlapTime = flapTime`; unless
+    /// dying, the flap advances (`0.1` sitting, else `0.2 / (|horizontal
+    /// motion|·10 + 1) · 2^motion.y`), and a NoAI dragon's is pinned at 0.5
+    /// and records no history; otherwise `(getY(), wrapDegrees(getYRot()))`
+    /// is recorded.
+    pub fn tick(
+        &mut self,
+        y: f64,
+        y_rot: f32,
+        motion: [f64; 3],
+        phase: i32,
+        dying: bool,
+        no_ai: bool,
+    ) {
+        self.flap_o = self.flap;
+        if dying {
+            return;
+        }
+        let horizontal = (motion[0] * motion[0] + motion[2] * motion[2]).sqrt() as f32;
+        let speed = 0.2 / (horizontal * 10.0 + 1.0) * 2f64.powf(motion[1]) as f32;
+        self.flap += if dragon_phase_sits(phase) { 0.1 } else { speed };
+        if no_ai {
+            self.flap = 0.5;
+        } else {
+            self.record(y, wrap_degrees(y_rot));
+        }
+    }
+}
+
+/// `Mth.wrapDegrees` for a float.
+pub fn wrap_degrees(d: f32) -> f32 {
+    let mut w = d % 360.0;
+    if w >= 180.0 {
+        w -= 360.0;
+    }
+    if w < -180.0 {
+        w += 360.0;
+    }
+    w
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +287,38 @@ mod tests {
         let first = a.at(1.0)[0];
         assert!((first - 0.3 * PI / 12.0).abs() < 1e-6);
         assert!((a.at(0.5)[0] - first / 2.0).abs() < 1e-6);
+    }
+
+    /// M409 — the history fills on its first sample, keeps 64, and a lerped
+    /// read blends a sample with the one before it (the yaw the short way
+    /// round); the flap is vanilla's, sitting 0.1, a NoAI dragon pinned at
+    /// 0.5 with nothing recorded.
+    #[test]
+    fn the_dragons_history_and_flap_are_vanillas() {
+        let mut d = DragonState::default();
+        d.record(64.0, 170.0);
+        assert_eq!(d.sample(40, 0.3), (64.0, 170.0));
+        d.record(66.0, -170.0);
+        let (y, r) = d.sample(0, 0.5);
+        // The short way round: halfway from 170 to -170 is 180 (= -180).
+        assert!(
+            (y - 65.0).abs() < 1e-9 && (wrap_degrees(r).abs() - 180.0).abs() < 1e-4,
+            "{y} {r}"
+        );
+        let mut f = DragonState::default();
+        f.tick(0.0, 0.0, [0.0; 3], 0, false, false);
+        assert!((f.flap - 0.2).abs() < 1e-6);
+        f.tick(0.0, 0.0, [0.3, -1.0, 0.4], 0, false, false);
+        assert!(
+            (f.flap - (0.2 + 0.2 / 6.0 * 0.5)).abs() < 1e-6,
+            "{}",
+            f.flap
+        );
+        f.tick(0.0, 0.0, [0.0; 3], DRAGON_HOVERING, false, false);
+        assert!((f.flap_o - (0.2 + 0.2 / 6.0 * 0.5)).abs() < 1e-6);
+        let mut n = DragonState::default();
+        n.tick(5.0, 30.0, [0.0; 3], 0, false, true);
+        assert_eq!((n.flap, n.head), (0.5, -1));
+        assert_eq!(n.sample(7, 0.5), (0.0, 0.0), "the default history");
     }
 }

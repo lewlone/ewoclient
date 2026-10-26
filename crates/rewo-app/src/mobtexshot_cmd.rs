@@ -104,7 +104,11 @@ use crate::stats::OverlayRing;
 /// Declared witness count — the gate fails closed if the run does not produce
 /// exactly this many, so adding one without bumping this turns it red rather
 /// than silently shrinking the coverage.
-const EXPECTED_WITNESSES: usize = 118;
+const EXPECTED_WITNESSES: usize = 119;
+/// M409 — m119's floor: the silhouette a turning, climbing flight history
+/// changes against a straight one (the same flap). Before M409 the model
+/// read no history (0 by construction).
+const DRAGON_BEND_MIN: usize = 1500;
 /// M403 — m118's floor: the pixels an elytra at rest adds to a player seen
 /// from behind. Before M403 the wings never drew (0 by construction).
 const ELYTRA_MIN: usize = 400;
@@ -7348,7 +7352,39 @@ fn run_check(
         dgst.off.read_rgba(gpu)
     };
     let (dg0, dg1) = (dgshot(0.0)?, dgshot(0.5)?);
+    // m119 — M409: the same dragon on a straight history and on one that
+    // turned 30° over its last ticks while climbing (the neck and tail
+    // bend, the body rolls and pitches).
+    let mut dgflight = |turned: bool| -> Result<Vec<u8>, String> {
+        let mut inputs = rewo_gpu::mobs::DragonInputs {
+            flap: 0.25,
+            ..Default::default()
+        };
+        if turned {
+            for i in 0..rewo_gpu::mobs::DRAGON_HISTORY {
+                inputs.y_rot[i] = 30.0 * (1.0 - i as f32 / 12.0).max(0.0);
+                inputs.y[i] = -0.3 * i as f32;
+            }
+        }
+        let d = EntityDraw {
+            mob: rewo_gpu::mobs::MobCombat {
+                dragon: Some(inputs),
+                body_pitch: if turned { 30.0 } else { 0.0 },
+                ..Default::default()
+            },
+            ..neutral_draw(EntityModelKind::EnderDragon)
+        };
+        dgst.wr.set_entities(&[d], dgst.right, dgst.up, 0.0);
+        dgst.off
+            .render(gpu, Some((&mut dgst.wr, dgst.vp)), &ov, BG)?;
+        dgst.off.read_rgba(gpu)
+    };
+    let (dg_straight, dg_turned) = (dgflight(false)?, dgflight(true)?);
     dgst.destroy(gpu);
+    if let Some(d) = &args.out_dir {
+        save_png(&dg_straight, cw, ch, &d.join("m119_dragon_straight.png"))?;
+        save_png(&dg_turned, cw, ch, &d.join("m119_dragon_turned.png"))?;
+    }
     let dg_mask = |f: &[u8]| -> Vec<bool> {
         f.as_chunks::<4>()
             .0
@@ -7362,6 +7398,16 @@ fn run_check(
         .zip(&dg_mask(&dg1))
         .filter(|(x, y)| x != y)
         .count();
+    let dg_bent = dg_mask(&dg_straight)
+        .iter()
+        .zip(&dg_mask(&dg_turned))
+        .filter(|(x, y)| x != y)
+        .count();
+    w.push(wit(
+        "m119.a_dragons_neck_and_tail_bend_with_its_flight",
+        dg_bent >= DRAGON_BEND_MIN,
+        format!("turning and climbing against straight: {dg_bent} px of silhouette (want >= {DRAGON_BEND_MIN})"),
+    ));
     w.push(wit(
         "m105.the_ender_dragon_flies_on_its_rig",
         dg_moved >= DRAGON_MIN,
